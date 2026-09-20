@@ -168,6 +168,38 @@ describe("Phase 4: Grounded Prompt & Lifecycle Hooks", () => {
 		expect(write).toBeUndefined();
 	});
 
+	it("offers skills and theme paths only when they exist", async () => {
+		const tempDir = await mkdtemp(join(tmpdir(), "kaioken-resources-"));
+		try {
+			const fake = createFakePi();
+			bridgeInit(fake.pi);
+
+			// A fresh checkout has no `.kaioken/`. Offering a path that does not
+			// exist makes Pi record a warning on every startup, so absence has
+			// to yield nothing rather than a hopeful path.
+			const empty = await fake.emitFirst("resources_discover", { cwd: tempDir, reason: "startup" }, fake.ctx(tempDir));
+			expect(empty?.skillPaths).toBeUndefined();
+			expect(empty?.themePaths).toBeUndefined();
+
+			await mkdir(join(tempDir, ".kaioken", "skills"), { recursive: true });
+			const withSkills = await fake.emitFirst(
+				"resources_discover",
+				{ cwd: tempDir, reason: "startup" },
+				fake.ctx(tempDir),
+			);
+			expect(withSkills.skillPaths).toEqual([join(tempDir, ".kaioken", "skills")]);
+			// Themes live in the repository, not under `.kaioken/`, so creating
+			// skills must not imply they exist.
+			expect(withSkills.themePaths).toBeUndefined();
+
+			await mkdir(join(tempDir, ".pi", "themes"), { recursive: true });
+			const both = await fake.emitFirst("resources_discover", { cwd: tempDir, reason: "startup" }, fake.ctx(tempDir));
+			expect(both.themePaths).toEqual([join(tempDir, ".pi", "themes")]);
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("flips badge to verified ✓ and clears dirty on verify PASS", async () => {
 		const tempDir = await mkdtemp(join(tmpdir(), "kaioken-badge-verify-"));
 		try {

@@ -5,7 +5,15 @@ import { extractClaims, findPadding } from "../src/claims.ts";
 import { coverageOf, groundingDefects, summariseDefects, verifyDocument } from "../src/verify.ts";
 import { documentPath, generateDocument } from "../src/generate.ts";
 import { planSections, planWiki } from "../src/plan.ts";
-import { normalisePlan, locate, writeWikiIndex, writeWikiPlan, readWikiPlan } from "../src/artifact.ts";
+import {
+	normalisePlan,
+	locate,
+	readVerification,
+	writeVerification,
+	writeWikiIndex,
+	writeWikiPlan,
+	readWikiPlan,
+} from "../src/artifact.ts";
 import { buildBrief, writeBrief, readBrief } from "../src/brief.ts";
 import { runWiki } from "../src/run.ts";
 import type { Chapter, WikiPlan } from "../src/types.ts";
@@ -544,6 +552,88 @@ describe("wiki: artifact normalisation", () => {
 			expect(text).toContain("[Core](core/index.md)");
 			expect(text).toContain("[S1](core/s1.md)");
 			expect(text).toContain("×3");
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("wiki: verification artifact", () => {
+	it("round-trips verdicts, including the defects themselves", async () => {
+		const { mkdtemp, rm } = await import("node:fs/promises");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+
+		const root = await mkdtemp(join(tmpdir(), "kaioken-verify-artifact-"));
+		try {
+			await writeVerification(root, {
+				model: "antigravity/gemini-3.8-flash-high",
+				multiplier: 7,
+				documents: [
+					{
+						document: "core/b.md",
+						grounded: 0,
+						uncovered: ["beta"],
+						coverage: 0,
+						defects: [{ kind: "unknown_symbol", claim: "calls `ghost()`", line: 12, detail: "no such symbol" }],
+					},
+					{
+						document: "core/a.md",
+						grounded: 4,
+						uncovered: [],
+						coverage: 1,
+						defects: [],
+					},
+				],
+			});
+
+			const back = await readVerification(root);
+			expect(back?.model).toBe("antigravity/gemini-3.8-flash-high");
+			expect(back?.multiplier).toBe(7);
+			// Sorted by document path, so a diff of two runs reads as content
+			// rather than as insertion order.
+			expect(back?.documents.map((d) => d.document)).toEqual(["core/a.md", "core/b.md"]);
+
+			// A count would tell a reader to be suspicious; the claim and its
+			// line tell them where to look. Persisting only the count would lose
+			// the thing that makes the badge actionable.
+			const defect = back?.documents[1]?.defects[0];
+			expect(defect?.claim).toBe("calls `ghost()`");
+			expect(defect?.line).toBe(12);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("returns null rather than throwing when nothing was written", async () => {
+		const { mkdtemp, rm } = await import("node:fs/promises");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+
+		const root = await mkdtemp(join(tmpdir(), "kaioken-verify-missing-"));
+		try {
+			// A repository documented before verification was recorded has no
+			// such file, and the pages must still render.
+			expect(await readVerification(root)).toBeNull();
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects a foreign shape instead of trusting it", async () => {
+		const { mkdtemp, mkdir, rm, writeFile } = await import("node:fs/promises");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+
+		const root = await mkdtemp(join(tmpdir(), "kaioken-verify-foreign-"));
+		try {
+			await mkdir(join(root, ".kaioken"), { recursive: true });
+			await writeFile(
+				join(root, ".kaioken", "verification.json"),
+				JSON.stringify({ version: 99, documents: "not an array" }),
+				"utf8",
+			);
+			expect(await readVerification(root)).toBeNull();
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}

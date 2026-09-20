@@ -47,6 +47,26 @@ export interface WikiDoc {
 	deleted: string[];
 	/** Other wiki documents this one links to in its prose, resolved and deduped. */
 	links: string[];
+	/**
+	 * What the verifier concluded about this document's claims, when a
+	 * verification record exists. Absent means unverified, which is a different
+	 * statement from "verified and clean" and is rendered as such.
+	 */
+	verification?: DocVerification;
+}
+
+/** The verifier's verdict on one document. */
+export interface DocVerification {
+	/** Claims checked and confirmed. */
+	grounded: number;
+	/** Claims that could not be confirmed. */
+	defects: number;
+	/** In-scope exports the document never mentions. */
+	uncovered: number;
+	/** Share of in-scope exports covered, 0..1. */
+	coverage: number;
+	/** The first few defects, for the panel. Full detail is in the artifact. */
+	samples: Array<{ claim: string; line?: number; detail: string }>;
 }
 
 export interface WikiChapter {
@@ -120,14 +140,18 @@ export async function readLibrary(root: string): Promise<Library> {
 	const wikiRoot = join(absRoot, KAIOKEN_DIR, "wiki");
 
 	const files = await walkMarkdown(wikiRoot);
-	const [plan, provenance, scan] = await Promise.all([
+	const [plan, provenance, scan, verification] = await Promise.all([
 		readPlan(absRoot),
 		readProvenanceIndex(absRoot),
 		readScanArtifact(absRoot),
+		readVerificationArtifact(absRoot),
 	]);
 
 	const records = new Map<string, Provenance>();
 	for (const record of provenance?.documents ?? []) records.set(record.document, record);
+
+	const verdicts = new Map<string, VerificationRecord>();
+	for (const record of verification?.documents ?? []) verdicts.set(record.document, record);
 
 	const status = new Map<string, DocumentStatus>();
 	if (provenance && scan) {
@@ -150,6 +174,7 @@ export async function readLibrary(root: string): Promise<Library> {
 		const record = records.get(path);
 		const entry = status.get(path);
 		const slash = path.lastIndexOf("/");
+		const verdict = verdicts.get(path);
 
 		docs.push({
 			path,
@@ -166,6 +191,21 @@ export async function readLibrary(root: string): Promise<Library> {
 			changed: entry?.changed ?? [],
 			deleted: entry?.deleted ?? [],
 			links: [],
+			...(verdict
+				? {
+						verification: {
+							grounded: verdict.grounded ?? 0,
+							defects: verdict.defects?.length ?? 0,
+							uncovered: verdict.uncovered?.length ?? 0,
+							coverage: typeof verdict.coverage === "number" ? verdict.coverage : 0,
+							samples: (verdict.defects ?? []).slice(0, 5).map((defect) => ({
+								claim: defect.claim,
+								...(defect.line !== undefined ? { line: defect.line } : {}),
+								detail: defect.detail,
+							})),
+						},
+					}
+				: {}),
 		});
 		rawLinks.set(path, extractMarkdownLinkTargets(body));
 	}
@@ -430,6 +470,33 @@ async function readProvenanceIndex(root: string): Promise<ProvenanceIndex | null
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * The verifier's verdicts, written by `kaioken wiki`.
+ *
+ * Read by path like every other store here, and tolerant of absence: a
+ * repository documented before verification was recorded has none, and the
+ * pages must say "unverified" rather than imply the documents were checked.
+ */
+async function readVerificationArtifact(root: string): Promise<{ documents: VerificationRecord[] } | null> {
+	try {
+		const parsed = JSON.parse(
+			await readFile(join(root, KAIOKEN_DIR, "verification.json"), "utf8"),
+		) as { documents?: VerificationRecord[] };
+		return Array.isArray(parsed?.documents) ? { documents: parsed.documents } : null;
+	} catch {
+		return null;
+	}
+}
+
+/** One document's verification record, as written to `.kaioken/verification.json`. */
+interface VerificationRecord {
+	document: string;
+	grounded?: number;
+	uncovered?: string[];
+	coverage?: number;
+	defects?: Array<{ claim: string; line?: number; detail: string }>;
 }
 
 /**

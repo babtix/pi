@@ -31,6 +31,7 @@ import {
 	readWikiPlan,
 	runWiki,
 	writeProvenance,
+	writeVerification,
 	writeWikiDocument,
 	writeWikiIndex,
 	writeWikiPlan,
@@ -539,6 +540,22 @@ export function registerCommands(
 				out.documents.map((d) => d.provenance),
 			);
 			await writeWikiIndex(r, out.plan);
+
+			// Record what the verifier concluded, so a reader can check the
+			// grounding claim rather than take it on trust. Until this existed
+			// the defects were computed, printed once, and dropped — leaving
+			// the serve site with nothing to badge.
+			await writeVerification(r, {
+				model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "offline",
+				multiplier: m,
+				documents: out.documents.map((d) => ({
+					document: d.path,
+					grounded: d.verification.grounded,
+					uncovered: d.verification.uncovered,
+					coverage: d.verification.coverage,
+					defects: d.verification.defects,
+				})),
+			});
 
 			const defects = out.documents.reduce((n, d) => n + groundingDefects(d.verification.defects).length, 0);
 			ctx.ui?.setStatus?.("kaioken", "grounded · flash-high");

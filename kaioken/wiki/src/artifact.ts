@@ -4,6 +4,7 @@ import { KAIOKEN_DIR } from "@kaioken/scan";
 import { parse, stringify } from "yaml";
 import type {
 	Chapter,
+	Defect,
 	Provenance,
 	ProvenanceIndex,
 	Section,
@@ -16,6 +17,7 @@ export const WIKI_PLAN_ARTIFACT = join(KAIOKEN_DIR, "wiki-plan.yaml");
 export const WIKI_DIR = join(KAIOKEN_DIR, "wiki");
 export const PROVENANCE_ARTIFACT = join(KAIOKEN_DIR, "provenance.json");
 export const WIKI_STATE_ARTIFACT = join(KAIOKEN_DIR, "wiki-state.json");
+export const VERIFICATION_ARTIFACT = join(KAIOKEN_DIR, "verification.json");
 export const BRIEF_ARTIFACT = join(KAIOKEN_DIR, "architecture.md");
 
 export function wikiPlanPath(root: string): string {
@@ -195,6 +197,80 @@ export async function writeWikiState(root: string, state: WikiRunState): Promise
 	await mkdir(dirname(path), { recursive: true });
 	await writeFile(path, `${JSON.stringify(state, null, 2)}\n`, "utf8");
 	return path;
+}
+
+/**
+ * What each generated document's verifier concluded.
+ *
+ * Provenance answers "what was this written from"; this answers "did the claims
+ * hold up". They are recorded separately because they fail independently — a
+ * document can cite exactly the right files and still assert something false
+ * about them, and a badge that conflated the two would report the second as
+ * fine. Without this on disk there is nothing for a reader to check: the
+ * per-document `defects` were computed, printed, and then dropped.
+ *
+ * Defects are stored, not just counted. A count tells a reader to be suspicious;
+ * the claim and its line tell them where to look.
+ */
+export interface VerificationRecord {
+	/** Wiki-relative document path. */
+	document: string;
+	/** Claims checked and confirmed. */
+	grounded: number;
+	/** In-scope exports the document never mentions. */
+	uncovered: string[];
+	/** Share of in-scope exports covered, 0..1. */
+	coverage: number;
+	defects: Defect[];
+}
+
+export interface VerificationIndex {
+	version: 1;
+	generatedAt: string;
+	/** The model and multiplier that produced these documents, so a reader can
+	 *  tell a thin result from a careful one. */
+	model?: string;
+	multiplier?: number;
+	documents: VerificationRecord[];
+}
+
+export function verificationPath(root: string): string {
+	return join(resolve(root), VERIFICATION_ARTIFACT);
+}
+
+export async function writeVerification(
+	root: string,
+	index: Omit<VerificationIndex, "version" | "generatedAt">,
+): Promise<string> {
+	const path = verificationPath(root);
+	await mkdir(dirname(path), { recursive: true });
+	const document: VerificationIndex = {
+		version: 1,
+		generatedAt: new Date().toISOString(),
+		...index,
+		documents: [...index.documents].sort((a, b) => a.document.localeCompare(b.document)),
+	};
+	await writeFile(path, `${JSON.stringify(document, null, 2)}\n`, "utf8");
+	return path;
+}
+
+/** Tolerant reader: any failure yields null, never an error. */
+export async function readVerification(root: string): Promise<VerificationIndex | null> {
+	try {
+		const raw = JSON.parse(await readFile(verificationPath(root), "utf8")) as unknown;
+		if (!raw || typeof raw !== "object") return null;
+		const obj = raw as Record<string, unknown>;
+		if (obj.version !== 1 || !Array.isArray(obj.documents)) return null;
+		return {
+			version: 1,
+			generatedAt: typeof obj.generatedAt === "string" ? obj.generatedAt : "",
+			...(typeof obj.model === "string" ? { model: obj.model } : {}),
+			...(typeof obj.multiplier === "number" ? { multiplier: obj.multiplier } : {}),
+			documents: obj.documents as VerificationRecord[],
+		};
+	} catch {
+		return null;
+	}
 }
 
 /**

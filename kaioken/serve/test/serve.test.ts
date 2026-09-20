@@ -243,6 +243,38 @@ async function documented(options: { move?: string } = {}): Promise<string> {
 			"One function of the URL.",
 			"",
 		].join("\n"),
+		".kaioken/verification.json": JSON.stringify(
+			{
+				version: 1,
+				generatedAt: "2026-01-01T00:00:00.000Z",
+				model: "antigravity/gemini-3.8-flash-high",
+				multiplier: 4,
+				documents: [
+					// Clean: every claim held up.
+					{ document: "core/index.md", grounded: 3, uncovered: [], coverage: 1, defects: [] },
+					// One bad claim, so the page has something actionable.
+					{
+						document: "core/ranking.md",
+						grounded: 2,
+						uncovered: ["rankAll"],
+						coverage: 0.5,
+						defects: [
+							{
+								kind: "ungrounded_symbol",
+								claim: "calls `scoreAll()`",
+								line: 9,
+								detail: "no declaration named scoreAll",
+							},
+						],
+					},
+					// `later/index.md` is deliberately absent: a document written
+					// before verification was recorded must read as unverified,
+					// not as verified and clean.
+				],
+			},
+			null,
+			2,
+		),
 		".kaioken/cards/core.json": JSON.stringify(
 			{
 				moduleId: "core",
@@ -395,6 +427,49 @@ describe("freshness", () => {
 
 		expect(page).toContain("Documented in");
 		expect(page).toContain("/d/core/ranking.md");
+	});
+});
+
+/**
+ * Freshness and grounding answer different questions — "do the sources still
+ * match?" versus "were the claims about them true?" — and a document can be
+ * fresh and wrong. The badge has to keep them apart, and it has to distinguish
+ * "verified clean" from "never verified", which is not the same as clean.
+ */
+describe("verification badge", () => {
+	it("marks a document verified when every claim held up", async () => {
+		const server = await start(await documented());
+		const page = await text(`${server.url}/d/core/index.md`);
+
+		expect(page).toContain("verified ✓");
+		expect(page).toContain("3 claim(s) checked");
+	});
+
+	it("names the failed claim rather than only counting it", async () => {
+		const server = await start(await documented());
+		const page = await text(`${server.url}/d/core/ranking.md`);
+
+		expect(page).toContain("1 ungrounded");
+		// A count tells a reader to be suspicious; the claim and its line tell
+		// them where to look. This is why defects are persisted, not tallied.
+		expect(page).toContain("calls `scoreAll()`");
+		expect(page).toContain("line 9");
+		expect(page).toContain("no declaration named scoreAll");
+	});
+
+	it("says unverified rather than implying a document was checked", async () => {
+		const server = await start(await documented());
+		const page = await text(`${server.url}/d/later/index.md`);
+
+		expect(page).toContain("unverified");
+		expect(page).not.toContain("verified ✓");
+	});
+
+	it("reports uncovered exports as incompleteness, not as error", async () => {
+		const server = await start(await documented());
+		const page = await text(`${server.url}/d/core/ranking.md`);
+
+		expect(page).toContain("never mentioned here");
 	});
 });
 

@@ -1,5 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { checkDrift } from "../../../../kaioken/provenance/src/status.ts";
+import { skillsDir } from "../../../../kaioken/skills/src/skills.ts";
 import { GROUNDING_RULES } from "../prompts/grounding.ts";
 
 /**
@@ -63,6 +66,33 @@ export function registerHooks(
 					.join(", ")}\n`
 			: "";
 		return { systemPrompt: `${event.systemPrompt}\n\n${head}${GROUNDING_RULES}` };
+	});
+
+	/**
+	 * Offer Pi the generated skills and the Kaioken theme as first-class
+	 * resources, so they appear in the ordinary skill list and theme picker
+	 * rather than only behind `kaioken_skill_load`.
+	 *
+	 * This returns paths instead of copying files into Pi's skills directory.
+	 * A copy would put generated content where the next `kaioken skills` run
+	 * cannot see that it is stale, and would leave files behind after a
+	 * checkout — the mirror is the repository, and Pi is pointed at it.
+	 *
+	 * Paths are only offered when they exist. A missing path is not harmless:
+	 * Pi records a "does not exist" warning for every one, and a fresh clone
+	 * with no `.kaioken/` yet would emit noise on every startup.
+	 */
+	pi.on("resources_discover", async (_event, ctx) => {
+		const project = ctx?.cwd ?? root();
+		const result: { skillPaths?: string[]; themePaths?: string[] } = {};
+
+		const skills = skillsDir(project);
+		if (existsSync(skills)) result.skillPaths = [skills];
+
+		const themes = join(project, ".pi", "themes");
+		if (existsSync(themes)) result.themePaths = [themes];
+
+		return result;
 	});
 
 	pi.on("session_start", async (_e, ctx) => {

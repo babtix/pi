@@ -777,6 +777,7 @@ export function docPage(
       </nav>
       <h1>${escapeHtml(title)}</h1>
       <p class="sub">
+        ${doc ? verificationBadge(doc) : ""}
         ${doc && library.judged ? `${badge(doc.freshness)} ` : ""}
         ${doc?.generatedAt ? `written ${escapeHtml(shortDate(doc.generatedAt))} · ` : ""}
         ${doc && doc.sources.length > 0 ? `from ${plural(doc.sources.length, "file")}` : ""}
@@ -784,9 +785,81 @@ export function docPage(
       ${doc ? staleNote(doc) : ""}
       ${headings.length > 1 ? mobileToc(headings) : ""}
       <article class="prose">${html}</article>
+      ${doc ? verificationPanel(doc) : ""}
       ${doc ? provenancePanel(doc) : ""}
       ${pager(previous, next)}`,
 	});
+}
+
+/**
+ * Whether the verifier's claim checks held up.
+ *
+ * This is deliberately separate from the freshness badge beside it. Freshness
+ * asks "do the sources still match?" and grounding asks "were the claims about
+ * them true?" — a document can be perfectly fresh and still have asserted
+ * something false, so collapsing them into one label would hide exactly the
+ * failure the verifier exists to catch.
+ */
+function verificationBadge(doc: WikiDoc): string {
+	const verdict = doc.verification;
+	if (!verdict) {
+		return `<span class="badge badge-unknown" title="No verification record was written for this document">unverified</span> `;
+	}
+	if (verdict.defects > 0) {
+		return `<span class="badge badge-orphaned" title="${verdict.defects} claim(s) could not be confirmed against the sources">${verdict.defects} ungrounded</span> `;
+	}
+	return `<span class="badge badge-current" title="${verdict.grounded} claim(s) checked against the sources">verified ✓</span> `;
+}
+
+/**
+ * The verifier's findings, including the ones that failed.
+ *
+ * A badge saying "3 ungrounded" tells a reader to be suspicious and nothing
+ * more. Naming the claim and its line turns that into something actionable,
+ * which is the whole reason defects are persisted rather than counted.
+ */
+function verificationPanel(doc: WikiDoc): string {
+	const verdict = doc.verification;
+	if (!verdict) return "";
+
+	const uncovered =
+		verdict.uncovered > 0
+			? `<p class="muted" style="font-size:12.5px;margin:12px 0 0">
+        ${verdict.uncovered} exported declaration(s) in scope are never mentioned here,
+        so this document is not a complete account of its own files.
+      </p>`
+			: "";
+
+	if (verdict.defects === 0) {
+		return `<details class="panel">
+    <summary>Verified — ${verdict.grounded} claim(s) checked</summary>
+    <p class="muted" style="font-size:13.5px;margin:0">
+      Every claim this document makes about its sources was checked against the code at
+      generation time and held up.
+    </p>
+    ${uncovered}
+  </details>`;
+	}
+
+	return `<details class="panel" open>
+    <summary>${verdict.defects} ungrounded claim(s) of ${verdict.grounded + verdict.defects} checked</summary>
+    <ul class="rows">${verdict.samples
+			.map(
+				(defect) =>
+					`<li style="display:block">
+          <div>${escapeHtml(defect.claim)}${
+						defect.line !== undefined ? `<span class="muted"> · line ${defect.line}</span>` : ""
+					}</div>
+          <div class="muted" style="font-size:12.5px">${escapeHtml(defect.detail)}</div>
+        </li>`,
+			)
+			.join("")}</ul>
+    <p class="muted" style="font-size:12.5px;margin:12px 0 0">
+      These could not be confirmed against the files listed below. Treat them as claims to
+      check, not as fact — the code is ground truth.
+    </p>
+    ${uncovered}
+  </details>`;
 }
 
 function staleNote(doc: WikiDoc): string {

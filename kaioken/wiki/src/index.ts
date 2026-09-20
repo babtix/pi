@@ -1,6 +1,7 @@
 export {
 	BRIEF_ARTIFACT,
 	PROVENANCE_ARTIFACT,
+	VERIFICATION_ARTIFACT,
 	WIKI_DIR,
 	WIKI_PLAN_ARTIFACT,
 	WIKI_STATE_ARTIFACT,
@@ -9,17 +10,21 @@ export {
 	normalisePlan,
 	provenancePath,
 	readProvenance,
+	readVerification,
 	readWikiPlan,
 	readWikiState,
+	verificationPath,
 	wikiDir,
 	wikiPlanPath,
 	wikiStatePath,
 	writeProvenance,
+	writeVerification,
 	writeWikiDocument,
 	writeWikiIndex,
 	writeWikiPlan,
 	writeWikiState,
 } from "./artifact.ts";
+export type { VerificationIndex, VerificationRecord } from "./artifact.ts";
 export { buildBrief, readBrief, writeBrief } from "./brief.ts";
 export type { BriefInput } from "./brief.ts";
 export { extractClaims, findPadding } from "./claims.ts";
