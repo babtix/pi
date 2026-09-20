@@ -168,7 +168,7 @@ describe("Phase 4: Grounded Prompt & Lifecycle Hooks", () => {
 		expect(write).toBeUndefined();
 	});
 
-	it("offers skills and theme paths only when they exist", async () => {
+	it("offers the skills path only when it exists, and never the theme path", async () => {
 		const tempDir = await mkdtemp(join(tmpdir(), "kaio-resources-"));
 		try {
 			const fake = createFakePi();
@@ -177,7 +177,11 @@ describe("Phase 4: Grounded Prompt & Lifecycle Hooks", () => {
 			// A fresh checkout has no `.kaioken/`. Offering a path that does not
 			// exist makes Pi record a warning on every startup, so absence has
 			// to yield nothing rather than a hopeful path.
-			const empty = await fake.emitFirst("resources_discover", { cwd: tempDir, reason: "startup" }, fake.ctx(tempDir));
+			const empty = await fake.emitFirst(
+				"resources_discover",
+				{ cwd: tempDir, reason: "startup" },
+				fake.ctx(tempDir),
+			);
 			expect(empty?.skillPaths).toBeUndefined();
 			expect(empty?.themePaths).toBeUndefined();
 
@@ -188,13 +192,29 @@ describe("Phase 4: Grounded Prompt & Lifecycle Hooks", () => {
 				fake.ctx(tempDir),
 			);
 			expect(withSkills.skillPaths).toEqual([join(tempDir, ".kaioken", "skills")]);
-			// Themes live in the repository, not under `.kaioken/`, so creating
-			// skills must not imply they exist.
-			expect(withSkills.themePaths).toBeUndefined();
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
 
+	it("does not offer .pi/themes, which Pi already discovers on its own", async () => {
+		// This is a regression guard, not a hypothetical. Offering the project's
+		// own `.pi/themes` directory registers every theme in it a second time,
+		// and Pi reports a name collision for each — the duplicate being
+		// "skipped". It was noise on every single startup.
+		const tempDir = await mkdtemp(join(tmpdir(), "kaio-theme-dup-"));
+		try {
 			await mkdir(join(tempDir, ".pi", "themes"), { recursive: true });
-			const both = await fake.emitFirst("resources_discover", { cwd: tempDir, reason: "startup" }, fake.ctx(tempDir));
-			expect(both.themePaths).toEqual([join(tempDir, ".pi", "themes")]);
+
+			const fake = createFakePi();
+			bridgeInit(fake.pi);
+			const result = await fake.emitFirst(
+				"resources_discover",
+				{ cwd: tempDir, reason: "startup" },
+				fake.ctx(tempDir),
+			);
+
+			expect(result?.themePaths).toBeUndefined();
 		} finally {
 			await rm(tempDir, { recursive: true, force: true });
 		}

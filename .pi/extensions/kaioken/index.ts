@@ -12,6 +12,62 @@ import type { PaintTheme } from "./ui/theme.ts";
 
 const VERSION = "0.1.0";
 
+/** The theme Kaioken applies to the whole session, when it is available. */
+const THEME_NAME = "kaioken";
+
+/**
+ * Switch the session to the Kaioken theme, so the palette reaches every part of
+ * the TUI rather than only the header.
+ *
+ * The header's own colours come from the theme it is handed, so a theme that is
+ * *installed but not selected* leaves the whole session — chat, tool output,
+ * diffs, footer — on the built-in `dark` palette while the banner sits in
+ * Kaioken orange above it. Applying it here is what makes the two agree.
+ *
+ * Two deliberate limits:
+ *
+ * - **It only applies when the theme exists.** `getTheme` returns undefined
+ *   when `.pi/themes/kaioken.json` is absent — a checkout that never ran the
+ *   build, or a user who deleted it. Falling back to a hard-coded palette would
+ *   ignore their own choice, so nothing happens instead.
+ * - **It is an instance, not a name.** `setTheme(name)` also writes the name to
+ *   settings, which would silently rewrite the user's `theme` preference as a
+ *   side effect of loading an extension. `setTheme(Theme)` sets it for this
+ *   session only and leaves their setting alone.
+ *
+ * `KAIOKEN_THEME=0` opts out entirely, and a user who has explicitly picked a
+ * different theme is left where they are — the extension should not overrule a
+ * deliberate choice, only fill in a default.
+ */
+function applyKaiokenTheme(ctx: ExtensionContext): void {
+	if (process.env.KAIOKEN_THEME === "0") return;
+
+	const instance = ctx.ui.getTheme(THEME_NAME);
+	if (!instance) return;
+
+	// Respect a deliberate choice. `dark/dark` is Pi's default auto-setting, so
+	// it reads as "no preference yet" rather than as a decision.
+	const configured = readConfiguredTheme();
+	if (configured && configured !== "dark/dark" && configured !== THEME_NAME) return;
+
+	const result = ctx.ui.setTheme(instance);
+	if (!result.success) return;
+	ctx.ui.setStatus("kaioken", "theme · kaioken");
+}
+
+/** The theme name from Pi's own settings, or undefined when it cannot be read. */
+function readConfiguredTheme(): string | undefined {
+	try {
+		const { readFileSync } = require("node:fs") as typeof import("node:fs");
+		const { homedir } = require("node:os") as typeof import("node:os");
+		const { join } = require("node:path") as typeof import("node:path");
+		const settings = JSON.parse(readFileSync(join(homedir(), ".pi", "agent", "settings.json"), "utf8"));
+		return typeof settings?.theme === "string" ? settings.theme : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * Read what `.kaioken/` currently holds, for the header's knowledge row.
  *
@@ -152,6 +208,9 @@ export default function (pi: ExtensionAPI) {
 		// Only the TUI mode has a header to replace; print and rpc modes have no
 		// terminal, and `setHeader` would be a no-op at best.
 		if (ctx.mode !== "tui") return;
+
+		applyKaiokenTheme(ctx);
+
 		ctx.ui.setHeader((createdTui, createdTheme) => {
 			tui = createdTui;
 			theme = createdTheme;
