@@ -3,11 +3,11 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 /**
  * A collection that reads as an array and indexes as a map.
  *
- * Registration order is meaningful here — `kaioken-*` commands appear in the
+ * Registration order is meaningful here — `kaio-*` commands appear in the
  * order they were registered, and the tool list is asserted positionally — but
  * suites also want to grab one entry by name without knowing its index. An
  * array with `get`/`has` added serves both, so a test can say
- * `tools.map(t => t.name)` or `tools.get("kaioken_verify")` without either
+ * `tools.map(t => t.name)` or `tools.get("kaio_verify")` without either
  * reading being a special case.
  */
 export interface Registry<T extends { name: string }> extends Array<T> {

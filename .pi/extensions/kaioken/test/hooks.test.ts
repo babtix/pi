@@ -25,8 +25,8 @@ describe("Phase 4: Grounded Prompt & Lifecycle Hooks", () => {
 		const result = await handler(event);
 		expect(result.systemPrompt).toContain("You are an assistant.");
 		expect(result.systemPrompt).toContain("KAIOKEN GROUNDING RULES");
-		expect(result.systemPrompt).toContain("1. NEVER assert a symbol/import/file exists without kaioken_symbol_lookup first.");
-		expect(result.systemPrompt).toContain("5. A coding task is COMPLETE only after kaioken_verify returns PASS.");
+		expect(result.systemPrompt).toContain("1. NEVER assert a symbol/import/file exists without kaio_symbol_lookup first.");
+		expect(result.systemPrompt).toContain("5. A coding task is COMPLETE only after kaio_verify returns PASS.");
 	});
 
 	it("sets grounded badge and widget on session_start", async () => {
@@ -169,7 +169,7 @@ describe("Phase 4: Grounded Prompt & Lifecycle Hooks", () => {
 	});
 
 	it("offers skills and theme paths only when they exist", async () => {
-		const tempDir = await mkdtemp(join(tmpdir(), "kaioken-resources-"));
+		const tempDir = await mkdtemp(join(tmpdir(), "kaio-resources-"));
 		try {
 			const fake = createFakePi();
 			bridgeInit(fake.pi);
@@ -201,7 +201,7 @@ describe("Phase 4: Grounded Prompt & Lifecycle Hooks", () => {
 	});
 
 	it("flips badge to verified ✓ and clears dirty on verify PASS", async () => {
-		const tempDir = await mkdtemp(join(tmpdir(), "kaioken-badge-verify-"));
+		const tempDir = await mkdtemp(join(tmpdir(), "kaio-badge-verify-"));
 		try {
 			await writeFile(
 				join(tempDir, "package.json"),
@@ -230,7 +230,7 @@ describe("Phase 4: Grounded Prompt & Lifecycle Hooks", () => {
 			expect(badgeStatus).toBe("UNVERIFIED CHANGES");
 
 			// Run verify passing tool
-			const verifyTool = fake.tools.get("kaioken_verify");
+			const verifyTool = fake.tools.get("kaio_verify");
 			const result = await verifyTool.execute("verify-call", {}, undefined, undefined, fakeCtx);
 			expect(result.content[0].text).toBe("VERIFY: PASS (0 errors)");
 

@@ -11,13 +11,13 @@ describe("Phase 3: Kaioken Bridge & Grounding Tools", () => {
 		expect(fake.tools.length).toBe(7);
 		const toolNames = fake.tools.map((t) => t.name);
 		expect(toolNames).toEqual([
-			"kaioken_symbol_lookup",
-			"kaioken_read_file",
-			"kaioken_wiki_search",
-			"kaioken_impact",
-			"kaioken_skill_load",
-			"kaioken_status",
-			"kaioken_verify",
+			"kaio_symbol_lookup",
+			"kaio_read_file",
+			"kaio_wiki_search",
+			"kaio_impact",
+			"kaio_skill_load",
+			"kaio_status",
+			"kaio_verify",
 		]);
 
 		const labels = fake.tools.map((t) => t.label);
@@ -33,7 +33,10 @@ describe("Phase 3: Kaioken Bridge & Grounding Tools", () => {
 
 		// Verify session_start hook
 		expect(fake.hooks.session_start).toBeDefined();
-		expect(fake.hooks.session_start.length).toBe(1);
+		// Two handlers, not one: the hooks module sets the badge and widget, and
+		// the extension entry point installs the custom header. They are
+		// separate concerns and Pi runs both.
+		expect(fake.hooks.session_start.length).toBe(2);
 
 		let setStatusArgs: [string, string] | null = null;
 		const fakeCtx = {

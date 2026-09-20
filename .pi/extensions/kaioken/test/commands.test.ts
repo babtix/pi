@@ -12,22 +12,22 @@ describe("Phase 6: Command Surface & HUD", () => {
 		bridgeInit(fake.pi);
 
 		const expected = [
-			"kaioken-scan",
-			"kaioken-symbols",
-			"kaioken-search",
-			"kaioken-status",
-			"kaioken-verify",
-			"kaioken-graph",
-			"kaioken-serve",
-			"kaioken-export",
-			"kaioken-delegate",
-			"kaioken-merge",
-			"kaioken-plan",
-			"kaioken-cards",
-			"kaioken-wiki",
-			"kaioken-update",
-			"kaioken-research",
-			"kaioken-skills",
+			"kaio-scan",
+			"kaio-symbols",
+			"kaio-search",
+			"kaio-status",
+			"kaio-verify",
+			"kaio-graph",
+			"kaio-serve",
+			"kaio-export",
+			"kaio-delegate",
+			"kaio-merge",
+			"kaio-plan",
+			"kaio-cards",
+			"kaio-wiki",
+			"kaio-update",
+			"kaio-research",
+			"kaio-skills",
 		];
 
 		for (const name of expected) {
@@ -47,7 +47,7 @@ describe("Phase 6: Command Surface & HUD", () => {
 	});
 
 	it("runs offline commands with zero network access", async () => {
-		const tempDir = await mkdtemp(join(tmpdir(), "kaioken-cmd-offline-"));
+		const tempDir = await mkdtemp(join(tmpdir(), "kaio-cmd-offline-"));
 		try {
 			await writeFile(
 				join(tempDir, "sample.ts"),
@@ -68,32 +68,32 @@ describe("Phase 6: Command Surface & HUD", () => {
 			const fake = createFakePi();
 			registerCommands(fake.pi, () => tempDir);
 
-			// 1. /kaioken-scan
-			const scanCmd = fake.commands.get("kaioken-scan");
+			// 1. /kaio-scan
+			const scanCmd = fake.commands.get("kaio-scan");
 			await scanCmd.handler("", fakeCtx);
 			expect(notifications.some((n) => n.includes("Scan complete"))).toBe(true);
 
-			// 2. /kaioken-symbols
+			// 2. /kaio-symbols
 			notifications.length = 0;
-			const symCmd = fake.commands.get("kaioken-symbols");
+			const symCmd = fake.commands.get("kaio-symbols");
 			await symCmd.handler("testFn", fakeCtx);
 			expect(notifications.some((n) => n.includes("testFn"))).toBe(true);
 
-			// 3. /kaioken-status
+			// 3. /kaio-status
 			notifications.length = 0;
-			const statusCmd = fake.commands.get("kaioken-status");
+			const statusCmd = fake.commands.get("kaio-status");
 			await statusCmd.handler("", fakeCtx);
 			expect(notifications.some((n) => n.includes("DRIFT REPORT"))).toBe(true);
 
-			// 4. /kaioken-graph
+			// 4. /kaio-graph
 			notifications.length = 0;
-			const graphCmd = fake.commands.get("kaioken-graph");
+			const graphCmd = fake.commands.get("kaio-graph");
 			await graphCmd.handler("", fakeCtx);
 			expect(notifications.some((n) => n.includes("Knowledge Graph"))).toBe(true);
 
-			// 5. /kaioken-export
+			// 5. /kaio-export
 			notifications.length = 0;
-			const exportCmd = fake.commands.get("kaioken-export");
+			const exportCmd = fake.commands.get("kaio-export");
 			await exportCmd.handler("", fakeCtx);
 			expect(notifications.some((n) => n.includes("Exported"))).toBe(true);
 		} finally {
@@ -102,7 +102,7 @@ describe("Phase 6: Command Surface & HUD", () => {
 	});
 
 	it("prompts spend confirmation on model commands and respects user cancel", async () => {
-		const tempDir = await mkdtemp(join(tmpdir(), "kaioken-cmd-spend-"));
+		const tempDir = await mkdtemp(join(tmpdir(), "kaio-cmd-spend-"));
 		try {
 			const notifications: string[] = [];
 			let confirmedPrompt = "";
@@ -124,7 +124,7 @@ describe("Phase 6: Command Surface & HUD", () => {
 			const fake = createFakePi();
 			registerCommands(fake.pi, () => tempDir);
 
-			const planCmd = fake.commands.get("kaioken-plan");
+			const planCmd = fake.commands.get("kaio-plan");
 			await planCmd.handler("×5", fakeCtx);
 
 			// The gate now quotes the active model's own registry, so with no model
@@ -139,8 +139,8 @@ describe("Phase 6: Command Surface & HUD", () => {
 		}
 	});
 
-	it("executes /kaioken-plan on confirmation and updates HUD widget with outline", async () => {
-		const tempDir = await mkdtemp(join(tmpdir(), "kaioken-cmd-plan-"));
+	it("executes /kaio-plan on confirmation and updates HUD widget with outline", async () => {
+		const tempDir = await mkdtemp(join(tmpdir(), "kaio-cmd-plan-"));
 		try {
 			await writeFile(join(tempDir, "index.ts"), "export const a = 1;\n");
 
@@ -161,7 +161,7 @@ describe("Phase 6: Command Surface & HUD", () => {
 			const fake = createFakePi();
 			registerCommands(fake.pi, () => tempDir);
 
-			const planCmd = fake.commands.get("kaioken-plan");
+			const planCmd = fake.commands.get("kaio-plan");
 			await planCmd.handler("×3", fakeCtx);
 
 			// The checkpoint is now a human-editable YAML plan.
@@ -180,7 +180,7 @@ describe("Phase 6: Command Surface & HUD", () => {
 	});
 
 	it("quotes real registry pricing when a model is bound, with no hardcoded rates", async () => {
-		const tempDir = await mkdtemp(join(tmpdir(), "kaioken-cmd-cost-"));
+		const tempDir = await mkdtemp(join(tmpdir(), "kaio-cmd-cost-"));
 		try {
 			let confirmedPrompt = "";
 			const fakeCtx = {
@@ -206,7 +206,7 @@ describe("Phase 6: Command Surface & HUD", () => {
 
 			const fake = createFakePi();
 			registerCommands(fake.pi, () => tempDir);
-			await fake.commands.get("kaioken-plan").handler("×1", fakeCtx);
+			await fake.commands.get("kaio-plan").handler("×1", fakeCtx);
 
 			expect(confirmedPrompt).toContain("antigravity/gemini-3.8-flash-high");
 			expect(confirmedPrompt).toMatch(/Cost: ~\$\d+\.\d{4} USD/);

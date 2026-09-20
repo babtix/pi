@@ -48,7 +48,7 @@ export function registerTools(
 	options?: RegisterToolsOptions,
 ) {
 	pi.registerTool({
-		name: "kaioken_symbol_lookup",
+		name: "kaio_symbol_lookup",
 		label: "Symbol Oracle",
 		description:
 			"DEFINITIVE AST oracle. Exact file/line/signature or 'DOES NOT EXIST'. Call BEFORE asserting any symbol, import, or file.",
@@ -66,7 +66,7 @@ export function registerTools(
 	});
 
 	pi.registerTool({
-		name: "kaioken_read_file",
+		name: "kaio_read_file",
 		label: "Grounded Read",
 		description: "Read exact line ranges with verified anchors. Prefer over raw read for code quoting.",
 		parameters: Type.Object({
@@ -81,7 +81,7 @@ export function registerTools(
 	});
 
 	pi.registerTool({
-		name: "kaioken_wiki_search",
+		name: "kaio_wiki_search",
 		label: "Wiki/Card Search",
 		description: "BM25+RRF over wiki, cards, skills. Skeletons first, detail on demand.",
 		parameters: Type.Object({
@@ -95,7 +95,7 @@ export function registerTools(
 	});
 
 	pi.registerTool({
-		name: "kaioken_impact",
+		name: "kaio_impact",
 		label: "Blast Radius",
 		description: "Predict files/modules broken by changing a symbol. Call BEFORE editing.",
 		parameters: Type.Object({ symbol: Type.String() }),
@@ -107,7 +107,7 @@ export function registerTools(
 	});
 
 	pi.registerTool({
-		name: "kaioken_skill_load",
+		name: "kaio_skill_load",
 		label: "Load Procedure",
 		description: "Load distilled task procedure from .kaioken/skills when a task matches.",
 		parameters: Type.Object({ name: Type.String() }),
@@ -118,7 +118,7 @@ export function registerTools(
 	});
 
 	pi.registerTool({
-		name: "kaioken_status",
+		name: "kaio_status",
 		label: "Drift Check",
 		description: "0-token staleness diff docs vs code. Call before documenting.",
 		parameters: Type.Object({}),
@@ -129,7 +129,7 @@ export function registerTools(
 	});
 
 	pi.registerTool({
-		name: "kaioken_verify",
+		name: "kaio_verify",
 		label: "Hard Test Gate",
 		description: "Run native build+test. Task NOT complete until PASS. Failures returned verbatim for repair.",
 		parameters: Type.Object({}),
@@ -140,7 +140,7 @@ export function registerTools(
 			return T(
 				outcome.pass
 					? "VERIFY: PASS (0 errors)"
-					: `VERIFY: FAIL\n${outcome.summary}\nEnter repair loop: fix, re-run kaioken_verify.`,
+					: `VERIFY: FAIL\n${outcome.summary}\nEnter repair loop: fix, re-run kaio_verify.`,
 			);
 		},
 	});

@@ -104,13 +104,13 @@ for (const event of ["before_agent_start", "resources_discover", "session_start"
 // The names are the contract other tooling matches on; a rename here breaks
 // prompts that were written against them.
 const expectedTools = [
-	"kaioken_symbol_lookup",
-	"kaioken_read_file",
-	"kaioken_wiki_search",
-	"kaioken_impact",
-	"kaioken_skill_load",
-	"kaioken_status",
-	"kaioken_verify",
+	"kaio_symbol_lookup",
+	"kaio_read_file",
+	"kaio_wiki_search",
+	"kaio_impact",
+	"kaio_skill_load",
+	"kaio_status",
+	"kaio_verify",
 ];
 for (const name of expectedTools) {
 	if (!tools.some((tool) => tool.name === name)) note(`tool "${name}" is not registered`);

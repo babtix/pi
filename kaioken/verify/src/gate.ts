@@ -205,7 +205,7 @@ export function tail(text: string): string {
 }
 
 export const REPAIR_PROTOCOL =
-	"REPAIR LOOP: read failure verbatim → minimal fix → re-run kaioken_verify.\n" +
+		"REPAIR LOOP: read failure verbatim → minimal fix → re-run kaio_verify.\n" +
 	"Max 5 iterations; then stop and present failing output to the human.\n" +
 	"Never weaken/delete tests to pass. Never mark done on FAIL.";
 

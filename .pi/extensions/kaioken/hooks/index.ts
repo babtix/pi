@@ -71,7 +71,7 @@ export function registerHooks(
 	/**
 	 * Offer Pi the generated skills and the Kaioken theme as first-class
 	 * resources, so they appear in the ordinary skill list and theme picker
-	 * rather than only behind `kaioken_skill_load`.
+	 * rather than only behind `kaio_skill_load`.
 	 *
 	 * This returns paths instead of copying files into Pi's skills directory.
 	 * A copy would put generated content where the next `kaioken skills` run

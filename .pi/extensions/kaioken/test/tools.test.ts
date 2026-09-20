@@ -18,7 +18,7 @@ import { fakePi as createFakePi } from "./fake-pi.ts";
  * far longer than a unit-test timeout. A three-file fixture indexed once here
  * gives the same assertions at a fraction of the cost.
  */
-const root = await mkdtemp(join(tmpdir(), "kaioken-bridge-"));
+const root = await mkdtemp(join(tmpdir(), "kaio-bridge-"));
 
 await mkdir(join(root, "src"), { recursive: true });
 await writeFile(
@@ -53,13 +53,13 @@ describe("Phase 3: Kaioken Grounding Tools & Probes", () => {
 	it("registers all 7 tools with expected schemas", () => {
 		expect(fake.tools.size).toBe(7);
 		for (const name of [
-			"kaioken_symbol_lookup",
-			"kaioken_read_file",
-			"kaioken_wiki_search",
-			"kaioken_impact",
-			"kaioken_skill_load",
-			"kaioken_status",
-			"kaioken_verify",
+			"kaio_symbol_lookup",
+			"kaio_read_file",
+			"kaio_wiki_search",
+			"kaio_impact",
+			"kaio_skill_load",
+			"kaio_status",
+			"kaio_verify",
 		]) {
 			expect(fake.tools.has(name)).toBe(true);
 		}
@@ -67,7 +67,7 @@ describe("Phase 3: Kaioken Grounding Tools & Probes", () => {
 
 	// Probe 1: Nonexistent symbol lookup
 	it("Probe 1: returns verbatim negative guarantee when symbol does not exist", async () => {
-		const tool = fake.tools.get("kaioken_symbol_lookup");
+		const tool = fake.tools.get("kaio_symbol_lookup");
 		const result = await tool.execute("call-1", { query: "authMagicLogin" }, undefined, undefined, fakeCtx);
 		expect(result.content[0].text).toBe(
 			'NEGATIVE GUARANTEE: no symbol matching "authMagicLogin" is declared. Do not invent it.',
@@ -75,7 +75,7 @@ describe("Phase 3: Kaioken Grounding Tools & Probes", () => {
 	});
 
 	it("Probe 1 (positive): returns AST location when symbol exists", async () => {
-		const tool = fake.tools.get("kaioken_symbol_lookup");
+		const tool = fake.tools.get("kaio_symbol_lookup");
 		const result = await tool.execute("call-2", { query: "alphaSearch" }, undefined, undefined, fakeCtx);
 		const hits = JSON.parse(result.content[0].text);
 		expect(Array.isArray(hits)).toBe(true);
@@ -85,7 +85,7 @@ describe("Phase 3: Kaioken Grounding Tools & Probes", () => {
 
 	// Probe 2: Quote a function body with byte accuracy
 	it("Probe 2: read exact line range matches resolveExcerpt byte-accurately", async () => {
-		const tool = fake.tools.get("kaioken_read_file");
+		const tool = fake.tools.get("kaio_read_file");
 		const relPath = "src/alpha.ts";
 		const start = 5;
 		const end = 7;
@@ -121,7 +121,7 @@ describe("Phase 3: Kaioken Grounding Tools & Probes", () => {
 			const hasEdits = actions.some((a) => ["edit", "write", "bash_mutate"].includes(a.tool));
 			if (!hasEdits) return { compliant: true };
 
-			const lastVerifyIndex = actions.map((a) => a.tool).lastIndexOf("kaioken_verify");
+			const lastVerifyIndex = actions.map((a) => a.tool).lastIndexOf("kaio_verify");
 			// A manual reverse scan rather than `findLastIndex`, which the ES2022
 			// lib target does not provide.
 			let lastEditIndex = -1;
@@ -133,12 +133,12 @@ describe("Phase 3: Kaioken Grounding Tools & Probes", () => {
 			}
 
 			if (lastVerifyIndex === -1) {
-				return { compliant: false, reason: "Session contains edits but kaioken_verify was never executed." };
+				return { compliant: false, reason: "Session contains edits but kaio_verify was never executed." };
 			}
 			if (lastVerifyIndex < lastEditIndex) {
 				return {
 					compliant: false,
-					reason: "Edits occurred after the last kaioken_verify call without subsequent verification.",
+					reason: "Edits occurred after the last kaio_verify call without subsequent verification.",
 				};
 			}
 			return { compliant: true };
@@ -146,23 +146,23 @@ describe("Phase 3: Kaioken Grounding Tools & Probes", () => {
 
 		// Non-compliant session: edited without verify
 		const badSession: AgentActionLog[] = [
-			{ tool: "kaioken_symbol_lookup", params: { query: "foo" } },
+			{ tool: "kaio_symbol_lookup", params: { query: "foo" } },
 			{ tool: "edit", params: { file: "foo.ts" } },
 		];
 		expect(checkSessionCompliance(badSession).compliant).toBe(false);
 
 		// Compliant session: edited then verified
 		const goodSession: AgentActionLog[] = [
-			{ tool: "kaioken_symbol_lookup", params: { query: "foo" } },
+			{ tool: "kaio_symbol_lookup", params: { query: "foo" } },
 			{ tool: "edit", params: { file: "foo.ts" } },
-			{ tool: "kaioken_verify" },
+			{ tool: "kaio_verify" },
 		];
 		expect(checkSessionCompliance(goodSession).compliant).toBe(true);
 	});
 
 	// Probe 4: Blast radius / impact analysis
 	it("Probe 4: predicts blast radius using AST dependents, not guessing", async () => {
-		const tool = fake.tools.get("kaioken_impact");
+		const tool = fake.tools.get("kaio_impact");
 		const result = await tool.execute("call-4", { symbol: "alphaSearch" }, undefined, undefined, fakeCtx);
 		const report = JSON.parse(result.content[0].text);
 		expect(report).toBeDefined();
@@ -175,7 +175,7 @@ describe("Phase 3: Kaioken Grounding Tools & Probes", () => {
 
 	// Probe 5: Stale-doc drift check
 	it("Probe 5: reports drift diff across docs vs code", async () => {
-		const tool = fake.tools.get("kaioken_status");
+		const tool = fake.tools.get("kaio_status");
 		const result = await tool.execute("call-5", {}, undefined, undefined, fakeCtx);
 		const report = JSON.parse(result.content[0].text);
 		expect(report).toBeDefined();
@@ -184,14 +184,14 @@ describe("Phase 3: Kaioken Grounding Tools & Probes", () => {
 		expect(Array.isArray(report.documents)).toBe(true);
 	});
 
-	it("kaioken_skill_load handles missing skills cleanly", async () => {
-		const tool = fake.tools.get("kaioken_skill_load");
+	it("kaio_skill_load handles missing skills cleanly", async () => {
+		const tool = fake.tools.get("kaio_skill_load");
 		const result = await tool.execute("call-6", { name: "nonexistent_procedure" }, undefined, undefined, fakeCtx);
 		expect(result.content[0].text).toContain('Skill "nonexistent_procedure" not found');
 	});
 
-	it("kaioken_verify executes and returns gate verdict on passing suite", async () => {
-		const tempDir = await mkdtemp(join(tmpdir(), "kaioken-verify-pass-"));
+	it("kaio_verify executes and returns gate verdict on passing suite", async () => {
+		const tempDir = await mkdtemp(join(tmpdir(), "kaio-verify-pass-"));
 		try {
 			await writeFile(
 				join(tempDir, "package.json"),
@@ -199,7 +199,7 @@ describe("Phase 3: Kaioken Grounding Tools & Probes", () => {
 			);
 			const customFake = createFakePi();
 			registerTools(customFake.pi, () => tempDir);
-			const tool = customFake.tools.get("kaioken_verify");
+			const tool = customFake.tools.get("kaio_verify");
 			const result = await tool.execute("call-pass", {}, undefined, undefined, { cwd: tempDir } as any);
 			expect(result.content[0].text).toBe("VERIFY: PASS (0 errors)");
 		} finally {
@@ -207,8 +207,8 @@ describe("Phase 3: Kaioken Grounding Tools & Probes", () => {
 		}
 	});
 
-	it("kaioken_verify executes and returns failure report on failing suite", async () => {
-		const tempDir = await mkdtemp(join(tmpdir(), "kaioken-verify-fail-"));
+	it("kaio_verify executes and returns failure report on failing suite", async () => {
+		const tempDir = await mkdtemp(join(tmpdir(), "kaio-verify-fail-"));
 		try {
 			await writeFile(
 				join(tempDir, "package.json"),
@@ -216,21 +216,21 @@ describe("Phase 3: Kaioken Grounding Tools & Probes", () => {
 			);
 			const customFake = createFakePi();
 			registerTools(customFake.pi, () => tempDir);
-			const tool = customFake.tools.get("kaioken_verify");
+			const tool = customFake.tools.get("kaio_verify");
 			const result = await tool.execute("call-fail", {}, undefined, undefined, { cwd: tempDir } as any);
 			expect(result.content[0].text).toContain("VERIFY: FAIL");
-			expect(result.content[0].text).toContain("Enter repair loop: fix, re-run kaioken_verify.");
+			expect(result.content[0].text).toContain("Enter repair loop: fix, re-run kaio_verify.");
 		} finally {
 			await rm(tempDir, { recursive: true, force: true });
 		}
 	});
 
-	it("kaioken_verify reports unverifiable when no suite detected", async () => {
-		const tempDir = await mkdtemp(join(tmpdir(), "kaioken-verify-none-"));
+	it("kaio_verify reports unverifiable when no suite detected", async () => {
+		const tempDir = await mkdtemp(join(tmpdir(), "kaio-verify-none-"));
 		try {
 			const customFake = createFakePi();
 			registerTools(customFake.pi, () => tempDir);
-			const tool = customFake.tools.get("kaioken_verify");
+			const tool = customFake.tools.get("kaio_verify");
 			const result = await tool.execute("call-none", {}, undefined, undefined, { cwd: tempDir } as any);
 			expect(result.content[0].text).toContain("VERIFY: FAIL");
 			expect(result.content[0].text).toContain("unverifiable: no native suite detected");

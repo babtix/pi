@@ -77,7 +77,7 @@ describe("evals: probes pass on a correct pipeline", () => {
 	});
 
 	it("probe 3: an edit followed by verify is compliant", () => {
-		expect(probe3VerifyCompliance([{ tool: "edit" }, { tool: "kaioken_verify" }]).passed).toBe(true);
+		expect(probe3VerifyCompliance([{ tool: "edit" }, { tool: "kaio_verify" }]).passed).toBe(true);
 	});
 
 	it("probe 4: the dependent file is reported", async () => {
@@ -125,12 +125,12 @@ describe("evals: the probes are capable of failing", () => {
 	it("probe 3 fails when a session edits without verifying", () => {
 		const outcome = probe3VerifyCompliance([{ tool: "edit" }, { tool: "bash" }]);
 		expect(outcome.passed).toBe(false);
-		expect(outcome.detail).toMatch(/never called kaioken_verify/);
+		expect(outcome.detail).toMatch(/never called kaio_verify/);
 	});
 
 	it("probe 3 fails when edits happen after the last verification", () => {
 		const outcome = probe3VerifyCompliance([
-			{ tool: "kaioken_verify" },
+			{ tool: "kaio_verify" },
 			{ tool: "edit" },
 		]);
 		expect(outcome.passed).toBe(false);
@@ -138,7 +138,7 @@ describe("evals: the probes are capable of failing", () => {
 	});
 
 	it("probe 3 passes a read-only session", () => {
-		expect(probe3VerifyCompliance([{ tool: "read" }, { tool: "kaioken_symbol_lookup" }]).passed).toBe(true);
+		expect(probe3VerifyCompliance([{ tool: "read" }, { tool: "kaio_symbol_lookup" }]).passed).toBe(true);
 	});
 
 	it("probe 2 fails for a range that does not exist", async () => {

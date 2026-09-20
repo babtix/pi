@@ -83,8 +83,11 @@ let rewritten = 0;
 for (const file of walk(BRIDGE)) {
 	const rel = relative(BRIDGE, file);
 	// Tests are development-only; the shipped extension is index + commands +
-	// hooks + tools + prompts.
+	// hooks + tools + prompts + ui.
 	if (rel.startsWith("test" + "/") || rel.startsWith("test\\")) continue;
+	// `ui/preview.ts` renders the banner to stdout so a layout change can be
+	// looked at. It is a development tool, not part of the extension.
+	if (rel === join("ui", "preview.ts")) continue;
 	if (rel === "package.json") continue;
 
 	const target = join(OUT, "extensions", rel);
@@ -170,25 +173,42 @@ pi install npm:kaioken-pi
 
 ## What you get
 
-Seven tools the agent can call:
+A header, seven tools, sixteen commands, two themes, and a hook that blocks
+destructive shell commands.
+
+### The header
+
+The KAIOKEN wordmark under its amber→red gradient, beside a panel that shows
+what you otherwise cannot see together: repo, branch, model, provider, whether
+a key is set, and what \`.kaioken/\` currently holds — including how much of it is
+still true.
+
+It animates twice and then stops. A boot curtain on startup (the wordmark rises
+a row at a time, an aura opens under it, three lines type themselves out) and a
+CRT power-off on quit. Nothing else moves: DESIGN.md's axiom is *if everything
+glows, nothing communicates*, so the only other motion is a rule that sweeps
+while a run is actually in flight.
+
+Set \`NO_MOTION=1\` or \`NO_COLOR=1\` to switch all of it off.
+
+### The tools
 
 | Tool | What it answers |
 | --- | --- |
-| \`kaioken_symbol_lookup\` | Does this symbol exist, and where? Or a negative guarantee. |
-| \`kaioken_read_file\` | Exact line ranges with verified anchors, for quoting code. |
-| \`kaioken_wiki_search\` | Search the generated wiki, cards and skills. |
-| \`kaioken_impact\` | What breaks if this symbol changes. |
-| \`kaioken_skill_load\` | Load a task procedure distilled from this repository. |
-| \`kaioken_status\` | What has drifted since the documents were written. |
-| \`kaioken_verify\` | Run the repository's own tests, build and lint. |
+| \`kaio_symbol_lookup\` | Does this symbol exist, and where? Or a negative guarantee. |
+| \`kaio_read_file\` | Exact line ranges with verified anchors, for quoting code. |
+| \`kaio_wiki_search\` | Search the generated wiki, cards and skills. |
+| \`kaio_impact\` | What breaks if this symbol changes. |
+| \`kaio_skill_load\` | Load a task procedure distilled from this repository. |
+| \`kaio_status\` | What has drifted since the documents were written. |
+| \`kaio_verify\` | Run the repository's own tests, build and lint. |
 
-Sixteen \`/kaioken-*\` commands for the offline pipeline: \`scan\`, \`index\`,
-\`search\`, \`graph\`, \`export\`, \`status\`, \`plan\`, \`cards\`, \`wiki\`,
-\`update\`, \`research\`, \`skills\`, \`serve\`, \`delegate\`, \`merge\`,
-\`verify\`.
+### The commands
 
-Plus a grounding prompt, two themes (\`kaioken\` and \`kaioken-light\`), and a
-hook that blocks destructive shell commands.
+Sixteen \`/kaio-*\` commands for the pipeline: \`scan\`, \`symbols\`,
+\`search\`, \`status\`, \`verify\`, \`graph\`, \`serve\`, \`export\`, \`plan\`,
+\`cards\`, \`wiki\`, \`update\`, \`research\`, \`skills\`, \`delegate\`,
+\`merge\`.
 
 ## What it costs
 

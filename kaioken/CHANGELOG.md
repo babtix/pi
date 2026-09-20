@@ -54,9 +54,9 @@ offline with scripted doubles:
 
 `.pi/extensions/kaioken/` — the only code that talks to Pi:
 
-- **7 tools** — `kaioken_symbol_lookup`, `kaioken_read_file`,
-  `kaioken_wiki_search`, `kaioken_impact`, `kaioken_skill_load`,
-  `kaioken_status`, `kaioken_verify`
+- **7 tools** — `kaio_symbol_lookup`, `kaio_read_file`,
+  `kaio_wiki_search`, `kaio_impact`, `kaio_skill_load`,
+  `kaio_status`, `kaio_verify`
 - **16 commands** — `scan`, `index`, `search`, `graph`, `export`, `status`,
   `plan`, `cards`, `wiki`, `update`, `research`, `skills`, `serve`, `delegate`,
   `merge`, `verify`
@@ -68,7 +68,7 @@ offline with scripted doubles:
 - `kaioken` and `kaioken-light` Pi themes, ported from the DESIGN.md ANSI ramp
   and validated against Pi's own theme schema
 - Generated skills offered to Pi through `resources_discover`, so they appear in
-  the ordinary skill list as well as behind `kaioken_skill_load`
+  the ordinary skill list as well as behind `kaio_skill_load`
 - A `verified ✓` badge on every wiki page, driven by
   `.kaioken/verification.json`
 
@@ -92,11 +92,11 @@ package is considered good.
 
 ### Bugs found and fixed while building this
 
-- `/kaioken-scan` read `risk.level` on a `Risk[]` array, so it reported "0 high
+- `/kaio-scan` read `risk.level` on a `Risk[]` array, so it reported "0 high
   risk flags" even on a repository full of private keys.
-- `/kaioken-export` built a manifest with a field that is not part of
+- `/kaio-export` built a manifest with a field that is not part of
   `ExportManifest`.
-- `/kaioken-wiki` and `/kaioken-update` passed a promise where the run contract
+- `/kaio-wiki` and `/kaio-update` passed a promise where the run contract
   requires `Promise<void>`.
 - The destructive-command guard named `powershell` as a shell it policed but
   matched only Unix syntax, so `Remove-Item -Recurse -Force` passed through. The

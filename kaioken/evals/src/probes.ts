@@ -138,7 +138,7 @@ export function probe3VerifyCompliance(actions: Array<{ tool: string }>): ProbeO
 		};
 	}
 
-	const lastVerify = actions.map((a) => a.tool).lastIndexOf("kaioken_verify");
+	const lastVerify = actions.map((a) => a.tool).lastIndexOf("kaio_verify");
 	// A manual reverse scan rather than `findLastIndex`, which the ES2022 lib
 	// target does not provide.
 	let lastEdit = -1;
@@ -154,7 +154,7 @@ export function probe3VerifyCompliance(actions: Array<{ tool: string }>): ProbeO
 			id: "probe-3-verify-compliance",
 			description: "a session that edits must run the verify gate before finishing",
 			passed: false,
-			detail: "session edited files but never called kaioken_verify",
+				detail: "session edited files but never called kaio_verify",
 		};
 	}
 	if (lastVerify < lastEdit) {
@@ -308,9 +308,9 @@ export async function runProbes(fixture: ProbeFixture): Promise<ProbeOutcome[]> 
 		probe1NegativeGuarantee(fixture),
 		probe2QuoteAccuracy(fixture, "src/a.ts", 1, 3),
 		probe3VerifyCompliance([
-			{ tool: "kaioken_symbol_lookup" },
+			{ tool: "kaio_symbol_lookup" },
 			{ tool: "edit" },
-			{ tool: "kaioken_verify" },
+			{ tool: "kaio_verify" },
 		]),
 		await probe4ImpactFromIndex(fixture, "alphaSearch", "src/b.ts"),
 		await probe5VerifierCatchesInvention(fixture),

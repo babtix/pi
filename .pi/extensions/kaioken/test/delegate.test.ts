@@ -16,12 +16,12 @@ describe("Phase 5: Gates, Repair Loop & Delegation", () => {
 		const fake = createFakePi();
 		bridgeInit(fake.pi);
 
-		expect(fake.commands.has("kaioken-delegate")).toBe(true);
-		expect(fake.commands.has("kaioken-merge")).toBe(true);
+		expect(fake.commands.has("kaio-delegate")).toBe(true);
+		expect(fake.commands.has("kaio-merge")).toBe(true);
 	});
 
 	it("returns unverifiable when no test suite is detected in repo", async () => {
-		const tempDir = await mkdtemp(join(tmpdir(), "kaioken-unverifiable-"));
+		const tempDir = await mkdtemp(join(tmpdir(), "kaio-unverifiable-"));
 		try {
 			const res = await runVerify(tempDir);
 			expect(res.pass).toBe(false);
@@ -32,13 +32,13 @@ describe("Phase 5: Gates, Repair Loop & Delegation", () => {
 	});
 
 	it("includes repair protocol on verify failure", () => {
-		expect(REPAIR_PROTOCOL).toContain("REPAIR LOOP: read failure verbatim → minimal fix → re-run kaioken_verify.");
+		expect(REPAIR_PROTOCOL).toContain("REPAIR LOOP: read failure verbatim → minimal fix → re-run kaio_verify.");
 		expect(REPAIR_PROTOCOL).toContain("Max 5 iterations");
 		expect(REPAIR_PROTOCOL).toContain("Never weaken/delete tests to pass.");
 	});
 
 	it("executes worktree delegation round-trip cleanly", async () => {
-		const testRepo = await mkdtemp(join(tmpdir(), "kaioken-wt-repo-"));
+		const testRepo = await mkdtemp(join(tmpdir(), "kaio-wt-repo-"));
 		try {
 			// Initialize real git repo
 			await runExec("git", ["init"], { cwd: testRepo });
@@ -80,7 +80,7 @@ describe("Phase 5: Gates, Repair Loop & Delegation", () => {
 	});
 
 	it("prevents merge if worktree fails verification", async () => {
-		const testRepo = await mkdtemp(join(tmpdir(), "kaioken-wt-fail-"));
+		const testRepo = await mkdtemp(join(tmpdir(), "kaio-wt-fail-"));
 		try {
 			// Initialize git repo
 			await runExec("git", ["init"], { cwd: testRepo });
@@ -121,7 +121,7 @@ describe("Phase 5: Gates, Repair Loop & Delegation", () => {
 				},
 			};
 
-			const mergeCmd = fake.commands.get("kaioken-merge");
+			const mergeCmd = fake.commands.get("kaio-merge");
 			await mergeCmd.handler(taskName, fakeCtx);
 
 			expect(notifications.length).toBeGreaterThan(0);

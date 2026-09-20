@@ -215,7 +215,7 @@ export async function runPlan(
 		...plan.modules.map((m) => `  - ${m.id} (${m.files.length} file${m.files.length === 1 ? "" : "s"})`),
 		"",
 		`Checkpoint written: ${planPath}`,
-		"Edit it, then run /kaioken-cards to continue.",
+		"Edit it, then run /kaio-cards to continue.",
 	];
 
 	return { moduleTree: outline, planPath, generated, defects };
@@ -262,8 +262,8 @@ export function registerCommands(
 			},
 		});
 
-	// 1. /kaioken-scan
-	off("kaioken-scan", "Deterministic repo inventory + risk flags", async (_a, r) => {
+	// 1. /kaio-scan
+	off("kaio-scan", "Deterministic repo inventory + risk flags", async (_a, r) => {
 		const scanResult = await scan(r);
 		await writeScanArtifact(r, scanResult);
 		// `risk` is a list of risk classes per file, not a graded object. Reading
@@ -283,9 +283,9 @@ export function registerCommands(
 		return `Scan complete: ${scanResult.fileCount} files (${Math.round(scanResult.totalBytes / 1024)} KB), ${indexResult.index.symbolCount} symbols indexed.${breakdown ? ` Risk flags: ${breakdown}.` : " No risk flags."}`;
 	});
 
-	// 2. /kaioken-symbols
-	off("kaioken-symbols", "Lookup symbol declaration in AST oracle", async (args, r) => {
-		if (!args.trim()) return "Usage: /kaioken-symbols <symbolName>";
+	// 2. /kaio-symbols
+	off("kaio-symbols", "Lookup symbol declaration in AST oracle", async (args, r) => {
+		if (!args.trim()) return "Usage: /kaio-symbols <symbolName>";
 		const index = await readIndexArtifact(r);
 		const oracle = new SymbolOracle(index ?? { root: r, builtAt: "", fileCount: 0, symbolCount: 0, unparsedLanguages: {}, files: [] });
 		const hits = oracle.lookup(args.trim());
@@ -294,14 +294,14 @@ export function registerCommands(
 			: `NEGATIVE GUARANTEE: no symbol matching "${args.trim()}" is declared.`;
 	});
 
-	// 3. /kaioken-search
-	off("kaioken-search", "BM25+RRF lexical and structural search", async (args, r) => {
-		if (!args.trim()) return "Usage: /kaioken-search <query>";
+	// 3. /kaio-search
+	off("kaio-search", "BM25+RRF lexical and structural search", async (args, r) => {
+		if (!args.trim()) return "Usage: /kaio-search <query>";
 		return await bm25Search(r, args.trim(), 8);
 	});
 
-	// 4. /kaioken-status
-	pi.registerCommand("kaioken-status", {
+	// 4. /kaio-status
+	pi.registerCommand("kaio-status", {
 		description: "0-token staleness drift report",
 		handler: async (_args, ctx) => {
 			const r = resolveRoot(root, ctx);
@@ -318,8 +318,8 @@ export function registerCommands(
 		},
 	});
 
-	// 5. /kaioken-verify
-	pi.registerCommand("kaioken-verify", {
+	// 5. /kaio-verify
+	pi.registerCommand("kaio-verify", {
 		description: "Run native build+test gate",
 		handler: async (_args, ctx) => {
 			const r = resolveRoot(root, ctx);
@@ -338,8 +338,8 @@ export function registerCommands(
 		},
 	});
 
-	// 6. /kaioken-graph
-	off("kaioken-graph", "Build and inspect knowledge dependency graph", async (_a, r) => {
+	// 6. /kaio-graph
+	off("kaio-graph", "Build and inspect knowledge dependency graph", async (_a, r) => {
 		const records = await gatherProvenance(r);
 		const graph = buildGraph({ provenance: records });
 		await writeGraph(r, graph);
@@ -347,8 +347,8 @@ export function registerCommands(
 		return `Knowledge Graph: ${stats.nodes} nodes, ${stats.edges} edges, ${stats.coveredFiles} covered files. Saved to .kaioken/graph.json.`;
 	});
 
-	// 7. /kaioken-serve
-	pi.registerCommand("kaioken-serve", {
+	// 7. /kaio-serve
+	pi.registerCommand("kaio-serve", {
 		description: "Start offline documentation preview server",
 		handler: async (_args, ctx) => {
 			const r = resolveRoot(root, ctx);
@@ -364,8 +364,8 @@ export function registerCommands(
 		},
 	});
 
-	// 8. /kaioken-export
-	off("kaioken-export", "Export static standalone documentation bundle", async (_a, r) => {
+	// 8. /kaio-export
+	off("kaio-export", "Export static standalone documentation bundle", async (_a, r) => {
 		const wikiFiles = await readWikiTree(join(r, ".kaioken", "wiki")).catch(() => []);
 		const cards = await readCards(r).catch(() => []);
 		const skills = await loadSkills(r).catch(() => ({ skills: [], problems: [] }));
@@ -387,8 +387,8 @@ export function registerCommands(
 		return `Exported ${written.length} asset(s) to .kaioken/export/ (${manifest.counts.wikiDocuments} wiki document(s), ${manifest.counts.cards} card(s), ${manifest.counts.skills} skill(s)).`;
 	});
 
-	// 9. /kaioken-delegate
-	pi.registerCommand("kaioken-delegate", {
+	// 9. /kaio-delegate
+	pi.registerCommand("kaio-delegate", {
 		description: "Isolate task in a git worktree",
 		handler: async (args, ctx) => {
 			const r = resolveRoot(root, ctx);
@@ -396,7 +396,7 @@ export function registerCommands(
 			try {
 				const wt = await createWorktree(r, taskSlug);
 				ctx.ui?.notify?.(
-					`worktree: ${wt}\nrun: cd ${wt} && pi --model antigravity/gemini-3.8-flash-high\nmerge: /kaioken-merge ${taskSlug}`,
+					`worktree: ${wt}\nrun: cd ${wt} && pi --model antigravity/gemini-3.8-flash-high\nmerge: /kaio-merge ${taskSlug}`,
 					"info",
 				);
 			} catch (e: any) {
@@ -405,8 +405,8 @@ export function registerCommands(
 		},
 	});
 
-	// 10. /kaioken-merge
-	pi.registerCommand("kaioken-merge", {
+	// 10. /kaio-merge
+	pi.registerCommand("kaio-merge", {
 		description: "Verify worktree then ff-merge",
 		handler: async (args, ctx) => {
 			const r = resolveRoot(root, ctx);
@@ -424,8 +424,8 @@ export function registerCommands(
 		},
 	});
 
-	// 11. /kaioken-plan <×N>
-	pi.registerCommand("kaioken-plan", {
+	// 11. /kaio-plan <×N>
+	pi.registerCommand("kaio-plan", {
 		description: "Propose modules.yaml (checkpoint, then stop)",
 		handler: async (args, ctx) => {
 			const r = resolveRoot(root, ctx);
@@ -436,13 +436,13 @@ export function registerCommands(
 			const note = out.generated
 				? "modules.yaml written by the model"
 				: "modules.yaml written mechanically (no model bound)";
-			ctx.ui?.notify?.(`${note} — REVIEW, then /kaioken-cards ${args || `×${m}`}`, "info");
+			ctx.ui?.notify?.(`${note} — REVIEW, then /kaio-cards ${args || `×${m}`}`, "info");
 			ctx.ui?.setWidget?.("kaioken", out.moduleTree.slice(0, 12));
 		},
 	});
 
-	// 12. /kaioken-cards <×N>
-	pi.registerCommand("kaioken-cards", {
+	// 12. /kaio-cards <×N>
+	pi.registerCommand("kaio-cards", {
 		description: "Generate knowledge cards from modules.yaml",
 		handler: async (args, ctx) => {
 			const r = resolveRoot(root, ctx);
@@ -451,7 +451,7 @@ export function registerCommands(
 
 			const plan = await readModulePlan(r);
 			if (!plan) {
-				ctx.ui?.notify?.("No module plan found. Run /kaioken-plan first.", "info");
+				ctx.ui?.notify?.("No module plan found. Run /kaio-plan first.", "info");
 				return;
 			}
 
@@ -486,8 +486,8 @@ export function registerCommands(
 		},
 	});
 
-	// 13. /kaioken-wiki [--plan] <×N>
-	pi.registerCommand("kaioken-wiki", {
+	// 13. /kaio-wiki [--plan] <×N>
+	pi.registerCommand("kaio-wiki", {
 		description: "Cascade wiki chapters generation",
 		handler: async (args, ctx) => {
 			const r = resolveRoot(root, ctx);
@@ -514,7 +514,7 @@ export function registerCommands(
 
 			const plan = await readWikiPlan(r);
 			if (!plan) {
-				ctx.ui?.notify?.("No wiki plan found. Run /kaioken-wiki --plan first.", "info");
+				ctx.ui?.notify?.("No wiki plan found. Run /kaio-wiki --plan first.", "info");
 				return;
 			}
 
@@ -566,8 +566,8 @@ export function registerCommands(
 		},
 	});
 
-	// 14. /kaioken-update [--dry] <×N>
-	pi.registerCommand("kaioken-update", {
+	// 14. /kaio-update [--dry] <×N>
+	pi.registerCommand("kaio-update", {
 		description: "Update stale documents from provenance diff",
 		handler: async (args, ctx) => {
 			const r = resolveRoot(root, ctx);
@@ -629,8 +629,8 @@ export function registerCommands(
 		},
 	});
 
-	// 15. /kaioken-research <topic> <×N>
-	pi.registerCommand("kaioken-research", {
+	// 15. /kaio-research <topic> <×N>
+	pi.registerCommand("kaio-research", {
 		description: "Grounded deep research report on topic",
 		handler: async (args, ctx) => {
 			const r = resolveRoot(root, ctx);
@@ -638,7 +638,7 @@ export function registerCommands(
 			const topic = args.replace(/--?\w+/g, "").replace(/[×x]\d+/i, "").trim();
 
 			if (!topic) {
-				ctx.ui?.notify?.("Usage: /kaioken-research <topic> <×N>", "info");
+				ctx.ui?.notify?.("Usage: /kaio-research <topic> <×N>", "info");
 				return;
 			}
 
@@ -680,8 +680,8 @@ export function registerCommands(
 		},
 	});
 
-	// 16. /kaioken-skills <×N>
-	pi.registerCommand("kaioken-skills", {
+	// 16. /kaio-skills <×N>
+	pi.registerCommand("kaio-skills", {
 		description: "Propose and write task procedures into .kaioken/skills",
 		handler: async (args, ctx) => {
 			const r = resolveRoot(root, ctx);
