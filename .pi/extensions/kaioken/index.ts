@@ -1,9 +1,33 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { registerHooks, setDirty } from "./hooks/index.ts";
 import { registerTools } from "./tools/index.ts";
 
 export default function (pi: ExtensionAPI) {
-	registerTools(pi);
-	pi.on("session_start", async (_e, ctx) => {
-		ctx.ui.setStatus("kaioken", "grounded v0.3");
+	const root = () => process.cwd();
+	let lastCtx: ExtensionContext | undefined;
+
+	const badge = (s: string) => {
+		lastCtx?.ui?.setStatus("kaioken", s);
+	};
+
+	registerHooks(
+		pi,
+		root,
+		(s) => badge(s),
+		(ctx) => {
+			lastCtx = ctx;
+		},
+	);
+
+	registerTools(pi, root, {
+		onVerify: (pass: boolean) => {
+			if (pass) {
+				setDirty(false);
+				badge("verified ✓");
+			} else {
+				setDirty(true);
+				badge("UNVERIFIED CHANGES");
+			}
+		},
 	});
 }

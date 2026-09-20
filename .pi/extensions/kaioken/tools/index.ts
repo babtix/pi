@@ -14,8 +14,8 @@ import { runVerify } from "../../../../kaioken/verify/src/gate.ts";
 const T = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
 
 function resolveRoot(rootFn?: () => string, ctx?: ExtensionContext): string {
-	if (rootFn) return rootFn();
 	if (ctx?.cwd) return ctx.cwd;
+	if (rootFn) return rootFn();
 	return process.cwd();
 }
 
@@ -38,7 +38,15 @@ export async function getSymbolOracle(root: string): Promise<SymbolOracle> {
 	}
 }
 
-export function registerTools(pi: ExtensionAPI, root?: () => string) {
+export interface RegisterToolsOptions {
+	onVerify?: (pass: boolean) => void;
+}
+
+export function registerTools(
+	pi: ExtensionAPI,
+	root?: () => string,
+	options?: RegisterToolsOptions,
+) {
 	pi.registerTool({
 		name: "kaioken_symbol_lookup",
 		label: "Symbol Oracle",
@@ -128,6 +136,7 @@ export function registerTools(pi: ExtensionAPI, root?: () => string) {
 		async execute(_id, _p, _signal, _onUpdate, ctx) {
 			const r = resolveRoot(root, ctx);
 			const outcome = await runVerify(r);
+			options?.onVerify?.(outcome.pass);
 			return T(
 				outcome.pass
 					? "VERIFY: PASS (0 errors)"

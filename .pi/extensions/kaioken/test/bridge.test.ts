@@ -54,10 +54,11 @@ describe("Phase 3: Kaioken Bridge & Grounding Tools", () => {
 				setStatus: (id: string, text: string) => {
 					setStatusArgs = [id, text];
 				},
+				setWidget: () => {},
 			},
 		};
 
 		await fake.hooks.session_start[0]({}, fakeCtx);
-		expect(setStatusArgs).toEqual(["kaioken", "grounded v0.3"]);
+		expect(setStatusArgs).toEqual(["kaioken", "grounded · flash-high"]);
 	});
 });
