@@ -7,14 +7,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { registerTools } from "../tools/index.ts";
-
-function createFakePi() {
-	const tools: Map<string, any> = new Map();
-	const pi = {
-		registerTool: (tool: any) => tools.set(tool.name, tool),
-	};
-	return { pi: pi as any, tools };
-}
+import { fakePi as createFakePi } from "./fake-pi.ts";
 
 /**
  * Probe fixture.

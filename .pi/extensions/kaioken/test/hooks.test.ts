@@ -5,20 +5,7 @@ import { tmpdir } from "node:os";
 import bridgeInit from "../index.ts";
 import { isDirty, registerHooks, setDirty } from "../hooks/index.ts";
 import { GROUNDING_RULES } from "../prompts/grounding.ts";
-
-function createFakePi() {
-	const tools: Map<string, any> = new Map();
-	const commands: Map<string, any> = new Map();
-	const hooks: Record<string, any[]> = {};
-	const pi = {
-		registerTool: (tool: any) => tools.set(tool.name, tool),
-		registerCommand: (name: string, opts: any) => commands.set(name, opts),
-		on: (event: string, handler: any) => {
-			(hooks[event] ??= []).push(handler);
-		},
-	};
-	return { pi: pi as any, tools, commands, hooks };
-}
+import { fakePi as createFakePi } from "./fake-pi.ts";
 
 describe("Phase 4: Grounded Prompt & Lifecycle Hooks", () => {
 	it("injects grounding rules into system prompt on before_agent_start", async () => {
@@ -131,6 +118,54 @@ describe("Phase 4: Grounded Prompt & Lifecycle Hooks", () => {
 		const safeCall = { toolName: "bash", input: { command: "git status" } };
 		const safeResult = await handler(safeCall, fakeCtx);
 		expect(safeResult).toBeUndefined();
+	});
+
+	it("blocks destructive commands through either shell and in any case", async () => {
+		const fake = createFakePi();
+		bridgeInit(fake.pi);
+		const fakeCtx = fake.ctx();
+
+		// The guard names both shells; only `bash` was covered before, so a
+		// destructive PowerShell command would have sailed through untested.
+		const blocked = [
+			{ toolName: "powershell", input: { command: "Remove-Item -Recurse -Force C:\\tmp" } },
+			{ toolName: "powershell", input: { command: "rm -rf ./build" } },
+			{ toolName: "bash", input: { command: "RM -RF /" } },
+			{ toolName: "bash", input: { command: "git push origin main --FORCE" } },
+			{ toolName: "bash", input: { command: "psql -c 'drop table users;'" } },
+		];
+
+		for (const call of blocked) {
+			const [result] = await fake.emit("tool_call", call, fakeCtx);
+			expect(result, `${call.toolName}: ${call.input.command}`).toEqual({
+				block: true,
+				reason: "Kaioken policy: destructive operation blocked",
+			});
+		}
+	});
+
+	it("allows a forced-free push and ignores destructive text in non-shell tools", async () => {
+		const fake = createFakePi();
+		bridgeInit(fake.pi);
+		const fakeCtx = fake.ctx();
+
+		// A plain push is the normal case and must not be blocked, or the guard
+		// becomes something people route around.
+		const [push] = await fake.emit(
+			"tool_call",
+			{ toolName: "bash", input: { command: "git push origin main" } },
+			fakeCtx,
+		);
+		expect(push).toBeUndefined();
+
+		// The rule is about what a shell would execute. `rm -rf` appearing in a
+		// document being written is text, not a command.
+		const [write] = await fake.emit(
+			"tool_call",
+			{ toolName: "write", input: { command: "rm -rf /" } },
+			fakeCtx,
+		);
+		expect(write).toBeUndefined();
 	});
 
 	it("flips badge to verified ✓ and clears dirty on verify PASS", async () => {

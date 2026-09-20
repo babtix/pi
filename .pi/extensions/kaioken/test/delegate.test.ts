@@ -7,22 +7,9 @@ import { tmpdir } from "node:os";
 import bridgeInit from "../index.ts";
 import { createWorktree, ffMerge, slug, worktreePath } from "../../../../kaioken/gitops/src/worktree.ts";
 import { REPAIR_PROTOCOL, runVerify } from "../../../../kaioken/verify/src/gate.ts";
+import { fakePi as createFakePi } from "./fake-pi.ts";
 
 const runExec = promisify(execFile);
-
-function createFakePi() {
-	const tools: Map<string, any> = new Map();
-	const commands: Map<string, any> = new Map();
-	const hooks: Record<string, any[]> = {};
-	const pi = {
-		registerTool: (tool: any) => tools.set(tool.name, tool),
-		registerCommand: (name: string, opts: any) => commands.set(name, opts),
-		on: (event: string, handler: any) => {
-			(hooks[event] ??= []).push(handler);
-		},
-	};
-	return { pi: pi as any, tools, commands, hooks };
-}
 
 describe("Phase 5: Gates, Repair Loop & Delegation", () => {
 	it("registers delegation commands", () => {

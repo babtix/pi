@@ -4,20 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import bridgeInit from "../index.ts";
 import { DefaultSpendGate, parseMult, registerCommands, type SpendGate } from "../commands/index.ts";
-
-function createFakePi() {
-	const tools: Map<string, any> = new Map();
-	const commands: Map<string, any> = new Map();
-	const hooks: Record<string, any[]> = {};
-	const pi = {
-		registerTool: (tool: any) => tools.set(tool.name, tool),
-		registerCommand: (name: string, opts: any) => commands.set(name, opts),
-		on: (event: string, handler: any) => {
-			(hooks[event] ??= []).push(handler);
-		},
-	};
-	return { pi: pi as any, tools, commands, hooks };
-}
+import { fakePi as createFakePi } from "./fake-pi.ts";
 
 describe("Phase 6: Command Surface & HUD", () => {
 	it("registers all 16 commands", () => {

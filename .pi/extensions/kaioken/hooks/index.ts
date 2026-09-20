@@ -2,6 +2,46 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { checkDrift } from "../../../../kaioken/provenance/src/status.ts";
 import { GROUNDING_RULES } from "../prompts/grounding.ts";
 
+/**
+ * Commands that destroy work irreversibly.
+ *
+ * This guard polices both `bash` and `powershell`, so it has to know both
+ * vocabularies. It originally listed only Unix spellings (`rm -rf`, `drop
+ * table`), which meant the destructive PowerShell idioms it claimed to cover
+ * passed straight through — the hook named a shell it could not actually read.
+ *
+ * The flag groups are written loosely because `rm -rf`, `rm -fr`, `rm -r -f`
+ * and `rm --recursive --force` are the same command. Anything that only
+ * rewrites a file in place is deliberately absent: over-blocking trains people
+ * to route around the guard, which is worse than the gap.
+ */
+const DESTRUCTIVE = [
+	// Unix recursive force delete, in any flag spelling.
+	/\brm\s+(?:-[a-z]*r[a-z]*\s+-[a-z]*f|-[a-z]*f[a-z]*\s+-[a-z]*r|--recursive[\s\S]*--force|--force[\s\S]*--recursive|-r[fF]|-f[rR])/i,
+	// PowerShell recursive force delete, including the `ri`/`del` aliases.
+	// No `\b` before the hyphenated flags: a word boundary needs a word/non-word
+	// transition, and the space before `-Recurse` is not one, so `\b-recurse`
+	// can never match. That single character is why `Remove-Item -Recurse
+	// -Force` slipped through a guard that explicitly named powershell.
+	/\b(?:remove-item|ri|del)\b[\s\S]*-recurse\b[\s\S]*-force\b/i,
+	/\b(?:remove-item|ri|del)\b[\s\S]*-force\b[\s\S]*-recurse\b/i,
+	// cmd.exe recursive quiet delete.
+	/\bdel\s+[\s\S]*\/[sq]\b/i,
+	// Disk-level destruction.
+	/\b(?:format-volume|clear-disk|diskpart)\b/i,
+	// History rewrites and discarding uncommitted work.
+	/\bgit\s+push\b[\s\S]*--force(?!-with-lease)/i,
+	/\bgit\s+reset\s+--hard\b/i,
+	/\bgit\s+clean\b[\s\S]*\s-[a-z]*[fdx]/i,
+	// Data loss.
+	/\bdrop\s+(?:table|database|schema)\b/i,
+	/\btruncate\s+table\b/i,
+];
+
+export function isDestructive(command: string): boolean {
+	return DESTRUCTIVE.some((pattern) => pattern.test(command));
+}
+
 let dirty = false;
 export const setDirty = (v: boolean) => {
 	dirty = v;
@@ -39,7 +79,7 @@ export function registerHooks(
 		}
 		if (
 			(event.toolName === "bash" || event.toolName === "powershell") &&
-			/rm\s+-rf|git\s+push\s+.*--force|drop\s+table/i.test(String((event.input as any)?.command ?? ""))
+			isDestructive(String((event.input as any)?.command ?? ""))
 		) {
 			return { block: true, reason: "Kaioken policy: destructive operation blocked" };
 		}

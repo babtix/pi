@@ -1,19 +1,6 @@
 import { describe, expect, it } from "vitest";
 import bridgeInit from "../index.ts";
-
-function createFakePi() {
-	const tools: any[] = [];
-	const commands: any[] = [];
-	const hooks: Record<string, any[]> = {};
-	const pi = {
-		registerTool: (tool: any) => tools.push(tool),
-		registerCommand: (name: string, opts: any) => commands.push({ name, ...opts }),
-		on: (event: string, handler: any) => {
-			(hooks[event] ??= []).push(handler);
-		},
-	};
-	return { pi: pi as any, tools, commands, hooks };
-}
+import { fakePi as createFakePi } from "./fake-pi.ts";
 
 describe("Phase 3: Kaioken Bridge & Grounding Tools", () => {
 	it("registers all 7 grounding tools and session_start hook", async () => {
