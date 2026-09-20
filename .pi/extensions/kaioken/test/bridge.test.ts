@@ -1,5 +1,4 @@
-import { describe, it } from "node:test";
-import assert from "node:assert/strict";
+import { describe, it, expect } from "vitest";
 import bridgeInit from "../index.ts";
 
 function createFakePi() {
@@ -22,20 +21,20 @@ describe("Phase 1: Kaioken Bridge Skeleton", () => {
 		bridgeInit(fake.pi);
 
 		// Verify tool registration
-		assert.equal(fake.tools.length, 1);
+		expect(fake.tools.length).toBe(1);
 		const statusTool = fake.tools[0];
-		assert.equal(statusTool.name, "kaioken_status");
-		assert.equal(statusTool.label, "Kaioken Status");
+		expect(statusTool.name).toBe("kaioken_status");
+		expect(statusTool.label).toBe("Kaioken Status");
 
 		// Execute tool
 		const result = await statusTool.execute();
-		assert.deepEqual(result.content, [
+		expect(result.content).toEqual([
 			{ type: "text", text: "bridge alive (core lands in Phase 2)" },
 		]);
 
 		// Verify session_start hook
-		assert.ok(fake.hooks.session_start);
-		assert.equal(fake.hooks.session_start.length, 1);
+		expect(fake.hooks.session_start).toBeDefined();
+		expect(fake.hooks.session_start.length).toBe(1);
 
 		let setStatusArgs: [string, string] | null = null;
 		const fakeCtx = {
@@ -47,6 +46,6 @@ describe("Phase 1: Kaioken Bridge Skeleton", () => {
 		};
 
 		await fake.hooks.session_start[0]({}, fakeCtx);
-		assert.deepEqual(setStatusArgs, ["kaioken", "bridge v0.1"]);
+		expect(setStatusArgs).toEqual(["kaioken", "bridge v0.1"]);
 	});
 });
