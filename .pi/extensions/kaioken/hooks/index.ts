@@ -96,8 +96,13 @@ export function registerHooks(
 
 	pi.on("session_start", async (_e, ctx) => {
 		onContext?.(ctx);
-		badge("grounded · flash-high");
-		ctx.ui.setWidget?.("kaioken", ["kaioken: grounded", "model: gemini-3.8-flash-high"]);
+		// The badge only. There used to be a widget here reading
+		// "kaioken: grounded / model: gemini-3.8-flash-high", and it was wrong
+		// twice over: the model name was hard-coded from the plan rather than
+		// read from the session, so it claimed a model that was not running, and
+		// the header already reports the real one. A status line that lies is
+		// worse than no status line.
+		badge("grounded");
 	});
 
 	pi.on("tool_call", async (event, ctx) => {

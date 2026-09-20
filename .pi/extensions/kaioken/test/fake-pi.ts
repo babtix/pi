@@ -78,6 +78,8 @@ export interface FakePi {
 	themeLookups: string[];
 	/** Theme values the bridge applied. */
 	themesApplied: unknown[];
+	/** Header factories the bridge registered. */
+	headerFactories: unknown[];
 }
 
 export function fakePi(): FakePi {
@@ -90,6 +92,8 @@ export function fakePi(): FakePi {
 	const themeLookups: string[] = [];
 	/** Theme values the bridge applied, in order. */
 	const themesApplied: unknown[] = [];
+	/** Header factories the bridge registered, in order. */
+	const headerFactories: unknown[] = [];
 
 	const pi = {
 		registerTool: (tool: any) => {
@@ -124,6 +128,12 @@ export function fakePi(): FakePi {
 					themesApplied.push(value);
 					return { success: true };
 				},
+				// The header factory is called by Pi, not by the bridge, so this
+				// records the factory rather than invoking it — a test that wants
+				// a header calls it with its own TUI.
+				setHeader: (factory: unknown) => {
+					headerFactories.push(factory);
+				},
 			},
 		}) as unknown as ExtensionContext;
 
@@ -151,6 +161,7 @@ export function fakePi(): FakePi {
 		statusText: () => status.map((s) => s.text),
 		themeLookups,
 		themesApplied,
+		headerFactories,
 	};
 }
 

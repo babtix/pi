@@ -395,8 +395,13 @@ export function registerCommands(
 			const taskSlug = slug(args || "task");
 			try {
 				const wt = await createWorktree(r, taskSlug);
+				// The model is named from the session rather than hard-coded.
+				// The old text told the user to run `--model
+				// antigravity/gemini-3.8-flash-high`, a provider that is not
+				// configured here — so following the instruction failed.
+				const model = ctx.model ? `--model ${ctx.model.provider}/${ctx.model.id}` : "";
 				ctx.ui?.notify?.(
-					`worktree: ${wt}\nrun: cd ${wt} && pi --model antigravity/gemini-3.8-flash-high\nmerge: /kaio-merge ${taskSlug}`,
+					`worktree: ${wt}\nrun: cd ${wt} && pi ${model}\nmerge: /kaio-merge ${taskSlug}`.replace(/ +$/m, ""),
 					"info",
 				);
 			} catch (e: any) {
@@ -474,7 +479,7 @@ export function registerCommands(
 			for (const result of results) await writeCard(r, result.card);
 
 			const ungrounded = results.reduce((n, x) => n + x.card.verification.ungrounded.length, 0);
-			ctx.ui?.setStatus?.("kaioken", "grounded · flash-high");
+			ctx.ui?.setStatus?.("kaioken", "grounded");
 			ctx.ui?.notify?.(
 				`Wrote ${results.length} card(s) to .kaioken/cards. ${ungrounded} ungrounded claim(s) reported in each card's verification.`,
 				"info",
@@ -558,7 +563,7 @@ export function registerCommands(
 			});
 
 			const defects = out.documents.reduce((n, d) => n + groundingDefects(d.verification.defects).length, 0);
-			ctx.ui?.setStatus?.("kaioken", "grounded · flash-high");
+			ctx.ui?.setStatus?.("kaioken", "grounded");
 			ctx.ui?.notify?.(
 				`Wrote ${out.documents.length} document(s); ${defects} ungrounded claim(s) reported${out.failures.length ? `, ${out.failures.length} failure(s)` : ""}.`,
 				"info",

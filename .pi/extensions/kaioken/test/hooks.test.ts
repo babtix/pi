@@ -29,26 +29,35 @@ describe("Phase 4: Grounded Prompt & Lifecycle Hooks", () => {
 		expect(result.systemPrompt).toContain("5. A coding task is COMPLETE only after kaio_verify returns PASS.");
 	});
 
-	it("sets grounded badge and widget on session_start", async () => {
+	it("sets the grounded badge on session_start, and no widget", async () => {
 		const fake = createFakePi();
 		bridgeInit(fake.pi);
 
 		let badgeStatus = "";
-		let widgetData: [string, string[]] | null = null;
 		const fakeCtx = {
 			ui: {
 				setStatus: (id: string, text: string) => {
 					if (id === "kaioken") badgeStatus = text;
 				},
-				setWidget: (id: string, lines: string[]) => {
-					widgetData = [id, lines];
-				},
+				setWidget: () => {},
 			},
 		};
 
 		await fake.hooks.session_start[0]({}, fakeCtx);
-		expect(badgeStatus).toBe("grounded · flash-high");
-		expect(widgetData).toEqual(["kaioken", ["kaioken: grounded", "model: gemini-3.8-flash-high"]]);
+		expect(badgeStatus).toBe("grounded");
+	});
+
+	it("does not claim a model in the badge", async () => {
+		// The badge used to read "grounded · flash-high" and a widget beneath it
+		// named gemini-3.8-flash-high — a model hard-coded from the plan rather
+		// than read from the session, so it named a model that was not running.
+		// The header reports the real one; nothing else should guess.
+		const fake = createFakePi();
+		bridgeInit(fake.pi);
+		await fake.emit("session_start", {}, fake.ctx());
+
+		expect(fake.statusText().join(" ")).not.toMatch(/flash-high|gemini|nemotron|glm/i);
+		expect(fake.widgets).toHaveLength(0);
 	});
 
 	it("flips badge to UNVERIFIED CHANGES and sets dirty on edit/write tool calls", async () => {
