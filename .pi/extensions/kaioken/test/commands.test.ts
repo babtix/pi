@@ -20,7 +20,7 @@ function createFakePi() {
 }
 
 describe("Phase 6: Command Surface & HUD", () => {
-	it("registers all 15 commands", () => {
+	it("registers all 16 commands", () => {
 		const fake = createFakePi();
 		bridgeInit(fake.pi);
 
@@ -40,12 +40,13 @@ describe("Phase 6: Command Surface & HUD", () => {
 			"kaioken-wiki",
 			"kaioken-update",
 			"kaioken-research",
+			"kaioken-skills",
 		];
 
 		for (const name of expected) {
 			expect(fake.commands.has(name)).toBe(true);
 		}
-		expect(fake.commands.size).toBe(15);
+		expect(fake.commands.size).toBe(16);
 	});
 
 	it("parses multiplier dial accurately", () => {

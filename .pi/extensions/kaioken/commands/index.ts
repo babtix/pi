@@ -1,16 +1,17 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Models } from "@earendil-works/pi-ai";
+import type { Models, ThinkingLevel } from "@earendil-works/pi-ai";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { buildGraph } from "../../../../kaioken/graph/src/build.ts";
 import { graphStats } from "../../../../kaioken/graph/src/render.ts";
-import { readWikiTree, writeExportTree, writeGraph } from "../../../../kaioken/graph/src/artifact.ts";
+import { readWikiTree, writeExportTree, writeGraph, type ExportManifest } from "../../../../kaioken/graph/src/artifact.ts";
 import { createWorktree, ffMerge, slug, worktreePath } from "../../../../kaioken/gitops/src/worktree.ts";
 import { buildIndex, readIndexArtifact, SymbolOracle, writeIndexArtifact } from "../../../../kaioken/index/src/index.ts";
 import { checkDrift, gatherProvenance } from "../../../../kaioken/provenance/src/status.ts";
 import { scan, writeScanArtifact } from "../../../../kaioken/scan/src/index.ts";
 import { bm25Search } from "../../../../kaioken/search/src/search.ts";
 import { serve, type RunningServer } from "../../../../kaioken/serve/src/server.ts";
+import { loadSkills } from "../../../../kaioken/skills/src/index.ts";
 import { runVerify } from "../../../../kaioken/verify/src/gate.ts";
 import { PiAiClient } from "../../../../kaioken/modelport/src/piai.ts";
 import type { ModelClient } from "../../../../kaioken/modelport/src/port.ts";
@@ -22,7 +23,7 @@ import {
 	type SpendEstimate as TokenSpendEstimate,
 } from "../../../../kaioken/modelport/src/spend.ts";
 import { proposeModulePlan, validatePlan, writeModulePlan, type ModulePlan } from "../../../../kaioken/plan/src/index.ts";
-import { generateCards, readModulePlan, writeCard } from "../../../../kaioken/plan/src/index.ts";
+import { generateCards, readCards, readModulePlan, writeCard } from "../../../../kaioken/plan/src/index.ts";
 import {
 	groundingDefects,
 	planWiki,
@@ -34,6 +35,15 @@ import {
 	writeWikiIndex,
 	writeWikiPlan,
 } from "../../../../kaioken/wiki/src/index.ts";
+import {
+	depthFor,
+	gatherSources,
+	generateResearch,
+	type WebFetchPort,
+	type WebSearchPort,
+	writeResearchDocument,
+} from "../../../../kaioken/research/src/index.ts";
+import { proposeSkills, writeSkill } from "../../../../kaioken/skillgen/src/index.ts";
 
 export interface SpendEstimate {
 	action: string;
@@ -117,10 +127,14 @@ export function clientFor(ctx: ExtensionContext): ModelClient | null {
 	// The bridge owns the transport; the core only ever sees the port.
 	const models = (ctx as unknown as { models?: Models }).models;
 	if (!models) return null;
+	// `ctx.thinkingLevel` is typed by the agent package, which spells the level
+	// union slightly differently from pi-ai ("off" is a model-level concept).
+	// They are the same values at runtime, so this narrows rather than casts.
+	const reasoning = ctx.thinkingLevel && ctx.thinkingLevel !== "off" ? ctx.thinkingLevel : undefined;
 	return new PiAiClient(models, {
 		provider: String(model.provider),
 		model: model.id,
-		...(ctx.thinkingLevel ? { reasoning: ctx.thinkingLevel } : {}),
+		...(reasoning ? { reasoning: reasoning as ThinkingLevel } : {}),
 	});
 }
 
@@ -206,10 +220,36 @@ export async function runPlan(
 	return { moduleTree: outline, planPath, generated, defects };
 }
 
+/**
+ * Web access, as two ports the bridge owns.
+ *
+ * The research core never opens a socket; it is handed these. That keeps the
+ * pipeline offline-testable and means an unconfigured environment fails with a
+ * sentence rather than a stack trace.
+ */
+export interface WebPorts {
+	search: WebSearchPort;
+	fetch: WebFetchPort;
+}
+
+export const NO_WEB_PORTS: WebPorts = {
+	search: {
+		async search() {
+			throw new Error("no web search provider configured");
+		},
+	},
+	fetch: {
+		async fetch() {
+			throw new Error("no web fetch provider configured");
+		},
+	},
+};
+
 export function registerCommands(
 	pi: ExtensionAPI,
 	root?: () => string,
 	spendGate: SpendGate = new DefaultSpendGate(),
+	web: WebPorts = NO_WEB_PORTS,
 ) {
 	const off = (name: string, desc: string, fn: (args: string, r: string) => Promise<string>) =>
 		pi.registerCommand(name, {
@@ -225,10 +265,21 @@ export function registerCommands(
 	off("kaioken-scan", "Deterministic repo inventory + risk flags", async (_a, r) => {
 		const scanResult = await scan(r);
 		await writeScanArtifact(r, scanResult);
-		const highRiskCount = scanResult.files.filter((f) => f.risk.level === "high").length;
+		// `risk` is a list of risk classes per file, not a graded object. Reading
+		// it as `risk.level` silently produced "0 high risk flags" on every
+		// repository, including ones full of private keys.
+		const risky = scanResult.files.filter((f) => f.risk.length > 0);
+		const byClass = new Map<string, number>();
+		for (const file of risky) {
+			for (const risk of file.risk) byClass.set(risk, (byClass.get(risk) ?? 0) + 1);
+		}
+		const breakdown = [...byClass.entries()]
+			.sort((a, b) => b[1] - a[1])
+			.map(([risk, n]) => `${n} ${risk}`)
+			.join(", ");
 		const indexResult = await buildIndex(scanResult);
 		await writeIndexArtifact(r, indexResult.index);
-		return `Scan complete: ${scanResult.fileCount} files (${Math.round(scanResult.totalBytes / 1024)} KB), ${highRiskCount} high risk flags, ${indexResult.index.symbolCount} symbols indexed.`;
+		return `Scan complete: ${scanResult.fileCount} files (${Math.round(scanResult.totalBytes / 1024)} KB), ${indexResult.index.symbolCount} symbols indexed.${breakdown ? ` Risk flags: ${breakdown}.` : " No risk flags."}`;
 	});
 
 	// 2. /kaioken-symbols
@@ -315,14 +366,24 @@ export function registerCommands(
 	// 8. /kaioken-export
 	off("kaioken-export", "Export static standalone documentation bundle", async (_a, r) => {
 		const wikiFiles = await readWikiTree(join(r, ".kaioken", "wiki")).catch(() => []);
-		const manifest = {
-			version: 1 as const,
-			exportedAt: new Date().toISOString(),
-			files: wikiFiles.map((f) => f.path),
+		const cards = await readCards(r).catch(() => []);
+		const skills = await loadSkills(r).catch(() => ({ skills: [], problems: [] }));
+		// The manifest records what the bundle contains, by count and by origin.
+		// `files` was never a field of ExportManifest, so the written manifest
+		// lacked the counts a consumer needs to know what it is looking at.
+		const manifest: ExportManifest = {
+			version: 1,
+			generatedAt: new Date().toISOString(),
+			repository: r,
+			counts: {
+				cards: cards.length,
+				wikiDocuments: wikiFiles.length,
+				skills: skills.skills.length,
+			},
 		};
 		const bundleDir = join(r, ".kaioken", "export");
 		const written = await writeExportTree(bundleDir, wikiFiles, manifest);
-		return `Exported ${written.length} standalone assets to .kaioken/export/`;
+		return `Exported ${written.length} asset(s) to .kaioken/export/ (${manifest.counts.wikiDocuments} wiki document(s), ${manifest.counts.cards} card(s), ${manifest.counts.skills} skill(s)).`;
 	});
 
 	// 9. /kaioken-delegate
@@ -465,7 +526,9 @@ export function registerCommands(
 				client,
 				multiplier: m,
 				...(brief ? { brief } : {}),
-				onDocument: (doc) => writeWikiDocument(r, doc),
+				onDocument: async (doc) => {
+					await writeWikiDocument(r, doc);
+				},
 				onProgress: (label, done, total) => ctx.ui?.setStatus?.("kaioken", `wiki ${done}/${total}: ${label}`),
 			});
 
@@ -536,7 +599,9 @@ export function registerCommands(
 				multiplier: m,
 				onlyDocuments: stale.map((d) => d.document),
 				...(brief ? { brief } : {}),
-				onDocument: (doc) => writeWikiDocument(r, doc),
+				onDocument: async (doc) => {
+					await writeWikiDocument(r, doc);
+				},
 			});
 
 			await writeProvenance(
@@ -551,9 +616,100 @@ export function registerCommands(
 	pi.registerCommand("kaioken-research", {
 		description: "Grounded deep research report on topic",
 		handler: async (args, ctx) => {
+			const r = resolveRoot(root, ctx);
 			const m = parseMult(args);
+			const topic = args.replace(/--?\w+/g, "").replace(/[×x]\d+/i, "").trim();
+
+			if (!topic) {
+				ctx.ui?.notify?.("Usage: /kaioken-research <topic> <×N>", "info");
+				return;
+			}
+
 			if (!(await spendGate.confirm(ctx, "research", m))) return;
-			ctx.ui?.notify?.(`Research dossier generation confirmed (×${m}).`, "info");
+
+			const client = clientFor(ctx);
+			if (!client) {
+				ctx.ui?.notify?.("No model bound; research needs one.", "info");
+				return;
+			}
+
+			// The network is injected here and nowhere else, so the research core
+			// itself stays transport-free and offline-testable (Invariant 10).
+			const depth = depthFor(m);
+			const gathered = await gatherSources({
+				question: topic,
+				depth,
+				search: web.search,
+				fetch: web.fetch,
+			});
+
+			const fetched = gathered.sources.filter((s) => s.fetched).length;
+			if (fetched === 0) {
+				ctx.ui?.notify?.(
+					`No page could be fetched for "${topic}". Nothing to research, and writing without sources would be fiction.`,
+					"info",
+				);
+				return;
+			}
+
+			const { document } = await generateResearch({ question: topic, gathered, depth, client });
+			const path = await writeResearchDocument(r, document);
+
+			ctx.ui?.notify?.(
+				`${document.verification.grounded}/${document.verification.cited} citation(s) grounded, ` +
+					`${document.verification.defects.length} defect(s). Written to ${path}.`,
+				"info",
+			);
+		},
+	});
+
+	// 16. /kaioken-skills <×N>
+	pi.registerCommand("kaioken-skills", {
+		description: "Propose and write task procedures into .kaioken/skills",
+		handler: async (args, ctx) => {
+			const r = resolveRoot(root, ctx);
+			const m = parseMult(args);
+			if (!(await spendGate.confirm(ctx, "skillgen", m))) return;
+
+			const client = clientFor(ctx);
+			if (!client) {
+				ctx.ui?.notify?.("No model bound; skill generation needs one.", "info");
+				return;
+			}
+
+			const scanResult = await scan(r);
+			const index = await readIndexArtifact(r).catch(() => null);
+			const plan = await readWikiPlan(r);
+
+			const proposals = await proposeSkills({
+				scan: scanResult,
+				index,
+				client,
+				...(plan ? { chapters: plan.chapters.map((c) => c.title) } : {}),
+			});
+
+			if (proposals.length === 0) {
+				ctx.ui?.notify?.("The model proposed no skills for this repository.", "info");
+				return;
+			}
+
+			const written: string[] = [];
+			let ungrounded = 0;
+			for (const proposal of proposals) {
+				try {
+					const result = await writeSkill({ root: r, proposal, scan: scanResult, index, client });
+					written.push(result.name);
+					ungrounded += result.ungrounded.length;
+				} catch (error) {
+					ctx.ui?.notify?.(`Skipped ${proposal.name}: ${(error as Error).message}`, "info");
+				}
+			}
+
+			ctx.ui?.notify?.(
+				`Wrote ${written.length} skill(s): ${written.join(", ")}.` +
+					(ungrounded ? ` ${ungrounded} ungrounded path(s) reported.` : ""),
+				"info",
+			);
 		},
 	});
 }
