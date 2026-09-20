@@ -47,9 +47,13 @@ jobs:
         run: npm run check:kaioken
 
       - name: Build the kaioken packages
-        run: |
-          npx tsc --build kaioken/modelport kaioken/plan kaioken/wiki \
-                          kaioken/research kaioken/skillgen kaioken/evals
+        run: npm run build:kaioken
+
+      # Proves the published package is installable, not merely that a build
+      # exited zero: the built extension is loaded through its own package
+      # specifiers and has to register its full surface.
+      - name: Build and verify the kaioken-pi package
+        run: npm run pack:kaioken
 
       - name: Test the kaioken packages
         run: |

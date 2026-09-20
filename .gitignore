@@ -44,3 +44,7 @@ plans/
 collect.sh
 packages/agent/docs/extensions/pi-server-artifact/index.md
 .kaioken/
+
+# Built Pi package staging (npm run pack:kaioken)
+kaioken-pi/
+
