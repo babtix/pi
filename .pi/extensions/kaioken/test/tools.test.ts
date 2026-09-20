@@ -106,10 +106,10 @@ describe("Phase 3: Kaioken Grounding Tools & Probes", () => {
 		const fakeFileMap = {
 			path: relPath,
 			hash: "hash",
-			bytes: fullSource.length,
+			language: "typescript",
 			lineCount: fullSource.split("\n").length,
+			unparsed: false,
 			symbols: [],
-			imports: [],
 		};
 
 		const resolution = resolveExcerpt(fakeFileMap, fullSource, quotedExcerpt);
@@ -129,7 +129,15 @@ describe("Phase 3: Kaioken Grounding Tools & Probes", () => {
 			if (!hasEdits) return { compliant: true };
 
 			const lastVerifyIndex = actions.map((a) => a.tool).lastIndexOf("kaioken_verify");
-			const lastEditIndex = actions.findLastIndex((a) => ["edit", "write", "bash_mutate"].includes(a.tool));
+			// A manual reverse scan rather than `findLastIndex`, which the ES2022
+			// lib target does not provide.
+			let lastEditIndex = -1;
+			for (let i = actions.length - 1; i >= 0; i--) {
+				if (["edit", "write", "bash_mutate"].includes((actions[i] as AgentActionLog).tool)) {
+					lastEditIndex = i;
+					break;
+				}
+			}
 
 			if (lastVerifyIndex === -1) {
 				return { compliant: false, reason: "Session contains edits but kaioken_verify was never executed." };

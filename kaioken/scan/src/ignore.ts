@@ -54,7 +54,11 @@ interface Layer {
  * directory that has an ignore file, and consulted only for paths beneath it.
  */
 export class IgnoreStack {
-	private constructor(private readonly layers: readonly Layer[]) {}
+	private readonly layers: readonly Layer[];
+
+	private constructor(layers: readonly Layer[]) {
+		this.layers = layers;
+	}
 
 	static fromPatterns(rootPatterns: readonly string[]): IgnoreStack {
 		return new IgnoreStack([{ base: "", matcher: makeIgnore().add([...rootPatterns]) }]);

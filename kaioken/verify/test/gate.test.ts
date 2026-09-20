@@ -30,8 +30,11 @@ async function repo(files: Record<string, string>): Promise<string> {
 
 class ScriptedRunner implements CommandRunner {
 	readonly ran: string[] = [];
+	private readonly outcomes: Record<string, Partial<RunOutcome>>;
 
-	constructor(private readonly outcomes: Record<string, Partial<RunOutcome>> = {}) {}
+	constructor(outcomes: Record<string, Partial<RunOutcome>> = {}) {
+		this.outcomes = outcomes;
+	}
 
 	async run(command: string): Promise<RunOutcome> {
 		this.ran.push(command);

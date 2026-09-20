@@ -1,3 +1,4 @@
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerCommands } from "./commands/index.ts";
 import { registerHooks, setDirty } from "./hooks/index.ts";
 import { registerTools } from "./tools/index.ts";

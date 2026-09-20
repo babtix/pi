@@ -56,7 +56,10 @@ export class SearchIndex {
 	private readonly tokens: string[][];
 	private readonly lexicon: Lexicon;
 
-	private constructor(private readonly data: PersistedIndex) {
+	private readonly data: PersistedIndex;
+
+	private constructor(data: PersistedIndex) {
+		this.data = data;
 		this.tokens = data.chunks.map((chunk) => analyze(`${chunk.heading}\n${chunk.text}`));
 		this.lexicon = new Lexicon(this.tokens);
 	}
