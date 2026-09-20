@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import bridgeInit from "../index.ts";
 
 function createFakePi() {
@@ -15,21 +15,33 @@ function createFakePi() {
 	return { pi: pi as any, tools, commands, hooks };
 }
 
-describe("Phase 1: Kaioken Bridge Skeleton", () => {
-	it("registers kaioken_status tool and session_start hook", async () => {
+describe("Phase 3: Kaioken Bridge & Grounding Tools", () => {
+	it("registers all 7 grounding tools and session_start hook", async () => {
 		const fake = createFakePi();
 		bridgeInit(fake.pi);
 
-		// Verify tool registration
-		expect(fake.tools.length).toBe(1);
-		const statusTool = fake.tools[0];
-		expect(statusTool.name).toBe("kaioken_status");
-		expect(statusTool.label).toBe("Kaioken Status");
+		// Verify 7 tools registered
+		expect(fake.tools.length).toBe(7);
+		const toolNames = fake.tools.map((t) => t.name);
+		expect(toolNames).toEqual([
+			"kaioken_symbol_lookup",
+			"kaioken_read_file",
+			"kaioken_wiki_search",
+			"kaioken_impact",
+			"kaioken_skill_load",
+			"kaioken_status",
+			"kaioken_verify",
+		]);
 
-		// Execute tool
-		const result = await statusTool.execute();
-		expect(result.content).toEqual([
-			{ type: "text", text: "bridge alive (core lands in Phase 2)" },
+		const labels = fake.tools.map((t) => t.label);
+		expect(labels).toEqual([
+			"Symbol Oracle",
+			"Grounded Read",
+			"Wiki/Card Search",
+			"Blast Radius",
+			"Load Procedure",
+			"Drift Check",
+			"Hard Test Gate",
 		]);
 
 		// Verify session_start hook
@@ -46,6 +58,6 @@ describe("Phase 1: Kaioken Bridge Skeleton", () => {
 		};
 
 		await fake.hooks.session_start[0]({}, fakeCtx);
-		expect(setStatusArgs).toEqual(["kaioken", "bridge v0.1"]);
+		expect(setStatusArgs).toEqual(["kaioken", "grounded v0.3"]);
 	});
 });

@@ -206,12 +206,18 @@ export function tail(text: string): string {
 
 export async function runVerify(root: string, timeoutMs = 300_000): Promise<{ pass: boolean; summary: string }> {
 	const isWin = process.platform === "win32";
-	const npmCmd = isWin ? "npm.cmd" : "npm";
 	const suite: [string, string[]] | null =
-		existsSync(join(root, "package.json")) ? [npmCmd, ["test"]] :
-		existsSync(join(root, "go.mod"))       ? ["go", ["test", "./..."]] :
-		existsSync(join(root, "Cargo.toml"))   ? ["cargo", ["test"]] :
-		existsSync(join(root, "Makefile"))     ? ["make", ["test"]] : null;
+		existsSync(join(root, "package.json"))
+			? isWin
+				? [process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", "npm test"]]
+				: ["npm", ["test"]]
+			: existsSync(join(root, "go.mod"))
+				? ["go", ["test", "./..."]]
+				: existsSync(join(root, "Cargo.toml"))
+					? ["cargo", ["test"]]
+					: existsSync(join(root, "Makefile"))
+						? ["make", ["test"]]
+						: null;
 
 	if (!suite) {
 		return { pass: false, summary: "unverifiable: no native suite detected" };

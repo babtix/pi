@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { FileMap, SymbolRecord } from "./types.ts";
 
 /**
@@ -134,3 +136,28 @@ function normaliseLines(excerpt: string): string[] {
 	while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
 	return lines;
 }
+
+/**
+ * Read exact line ranges for grounded code quoting.
+ * Returns the exact slice of lines from `startLine` to `endLine` (1-indexed inclusive).
+ */
+export async function readExcerpt(
+	root: string,
+	relPath: string,
+	startLine: number,
+	endLine: number,
+): Promise<string> {
+	const fullPath = join(root, relPath);
+	let content: string;
+	try {
+		content = await readFile(fullPath, "utf8");
+	} catch {
+		return `FILE NOT FOUND: "${relPath}" does not exist in repository.`;
+	}
+	const lines = content.split(/\r?\n/);
+	if (lines.length === 0) return "";
+	const s = Math.max(1, Math.min(startLine, lines.length));
+	const e = Math.max(s, Math.min(endLine, lines.length));
+	return lines.slice(s - 1, e).join("\n");
+}
+
