@@ -139,9 +139,12 @@ describe("Phase 6: Command Surface & HUD", () => {
 			const planCmd = fake.commands.get("kaioken-plan");
 			await planCmd.handler("×5", fakeCtx);
 
-			expect(confirmedPrompt).toContain("/kaioken-plan (×5)");
-			expect(confirmedPrompt).toContain("Est cost:");
-			expect(confirmedPrompt).toContain("Gemini 3.8 Flash high");
+			// The gate now quotes the active model's own registry, so with no model
+			// bound it must say so plainly rather than print a made-up price.
+			expect(confirmedPrompt).toContain("plan ×5");
+			expect(confirmedPrompt).toContain("Cost: unknown");
+			expect(confirmedPrompt).not.toMatch(/\$\d/);
+			expect(confirmedPrompt).toContain("not a quote");
 			expect(notifications).toContain("Cancelled spend.");
 		} finally {
 			await rm(tempDir, { recursive: true, force: true }).catch(() => {});
@@ -173,14 +176,53 @@ describe("Phase 6: Command Surface & HUD", () => {
 			const planCmd = fake.commands.get("kaioken-plan");
 			await planCmd.handler("×3", fakeCtx);
 
-			// Verify modules.yaml was written
-			const writtenYaml = await readFile(join(tempDir, ".kaioken", "modules.yaml"), "utf8");
-			expect(writtenYaml).toContain("modules.yaml checkpoint");
+			// The checkpoint is now a human-editable YAML plan.
+			const writtenYaml = await readFile(join(tempDir, ".kaioken", "module-plan.yaml"), "utf8");
+			expect(writtenYaml).toContain("Kaioken module plan");
 			expect(writtenYaml).toContain("multiplier: 3");
 
 			// Verify HUD widget received outline
 			expect(widgetLines.length).toBeGreaterThan(0);
-			expect(widgetLines[0]).toBe("modules.yaml outline:");
+			expect(widgetLines[0]).toContain("module plan");
+			// With no model bound the plan is mechanical, and says so.
+			expect(widgetLines[0]).toContain("mechanical");
+		} finally {
+			await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+		}
+	});
+
+	it("quotes real registry pricing when a model is bound, with no hardcoded rates", async () => {
+		const tempDir = await mkdtemp(join(tmpdir(), "kaioken-cmd-cost-"));
+		try {
+			let confirmedPrompt = "";
+			const fakeCtx = {
+				cwd: tempDir,
+				hasUI: true,
+				// Deliberately unusual rates: if the gate were still hardcoding
+				// Gemini prices, this figure could not appear.
+				model: {
+					id: "gemini-3.8-flash-high",
+					provider: "antigravity",
+					cost: { input: 1.0, output: 2.0, cacheRead: 0.1, cacheWrite: 0.2 },
+				},
+				ui: {
+					notify: () => {},
+					confirm: async (_title: string, message: string) => {
+						confirmedPrompt = message;
+						return false;
+					},
+					setStatus: () => {},
+					setWidget: () => {},
+				},
+			};
+
+			const fake = createFakePi();
+			registerCommands(fake.pi, () => tempDir);
+			await fake.commands.get("kaioken-plan").handler("×1", fakeCtx);
+
+			expect(confirmedPrompt).toContain("antigravity/gemini-3.8-flash-high");
+			expect(confirmedPrompt).toMatch(/Cost: ~\$\d+\.\d{4} USD/);
+			expect(confirmedPrompt).not.toContain("unknown");
 		} finally {
 			await rm(tempDir, { recursive: true, force: true }).catch(() => {});
 		}

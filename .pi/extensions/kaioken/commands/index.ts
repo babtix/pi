@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { Models } from "@earendil-works/pi-ai";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { buildGraph } from "../../../../kaioken/graph/src/build.ts";
@@ -11,6 +12,17 @@ import { scan, writeScanArtifact } from "../../../../kaioken/scan/src/index.ts";
 import { bm25Search } from "../../../../kaioken/search/src/search.ts";
 import { serve, type RunningServer } from "../../../../kaioken/serve/src/server.ts";
 import { runVerify } from "../../../../kaioken/verify/src/gate.ts";
+import { PiAiClient } from "../../../../kaioken/modelport/src/piai.ts";
+import type { ModelClient } from "../../../../kaioken/modelport/src/port.ts";
+import {
+	contextTokensFor,
+	describeSpend,
+	estimateSpend,
+	estimateTokens,
+	type SpendEstimate as TokenSpendEstimate,
+} from "../../../../kaioken/modelport/src/spend.ts";
+import { proposeModulePlan, validatePlan, writeModulePlan, type ModulePlan } from "../../../../kaioken/plan/src/index.ts";
+import { generateCards, readModulePlan, writeCard } from "../../../../kaioken/plan/src/index.ts";
 
 export interface SpendEstimate {
 	action: string;
@@ -33,28 +45,33 @@ export function parseMult(args?: string): number {
 	return Math.max(1, Math.min(10, n));
 }
 
+/**
+ * Spend gate backed by the active model's own cost registry.
+ *
+ * Prices are read from `ctx.model.cost` rather than hardcoded, so a price
+ * change is a config change and the estimate cannot silently drift (Invariant 9).
+ * When no model is resolvable the gate still estimates tokens but reports cost
+ * as unknown rather than inventing a figure.
+ */
 export class DefaultSpendGate implements SpendGate {
-	estimate(action: string, multiplier: number, contextSize = 25_000): SpendEstimate {
-		const baseInput = contextSize * (multiplier / 3);
-		const baseOutput = 4_000 * (multiplier / 3);
-		// Gemini 3.8 Flash (high) pricing: $0.15/1M in, $0.60/1M out
-		const cost = (baseInput / 1_000_000) * 0.15 + (baseOutput / 1_000_000) * 0.60;
+	estimate(action: string, multiplier: number, contextSize?: number): SpendEstimate {
+		const tokens = estimateTokens(multiplier, contextSize ?? contextTokensFor(action));
+		// Cost is filled in by `confirm`, which is the only place a model is reachable.
 		return {
 			action,
 			multiplier,
-			estimatedInputTokens: Math.round(baseInput),
-			estimatedOutputTokens: Math.round(baseOutput),
-			estimatedCostUsd: Math.round(cost * 10_000) / 10_000,
+			estimatedInputTokens: tokens.input,
+			estimatedOutputTokens: tokens.output,
+			estimatedCostUsd: 0,
 		};
 	}
 
 	async confirm(ctx: ExtensionContext, action: string, multiplier: number): Promise<boolean> {
-		const est = this.estimate(action, multiplier);
-		const promptText =
-			`Kaioken Spend Confirmation: /kaioken-${action} (×${multiplier})\n` +
-			`Est tokens: ~${est.estimatedInputTokens.toLocaleString()} in / ~${est.estimatedOutputTokens.toLocaleString()} out\n` +
-			`Est cost: ~$${est.estimatedCostUsd.toFixed(4)} USD (Gemini 3.8 Flash high)\n` +
-			`Proceed?`;
+		const tokens = estimateTokens(multiplier, contextTokensFor(action));
+		const model = ctx.model;
+		const spend: TokenSpendEstimate = estimateSpend(model?.cost, tokens);
+		const label = model ? `${model.provider}/${model.id}` : "no active model";
+		const promptText = describeSpend(action, multiplier, spend, label);
 
 		if (ctx.hasUI && ctx.ui?.confirm) {
 			const ok = await ctx.ui.confirm("Spend Confirmation", promptText);
@@ -76,47 +93,106 @@ function resolveRoot(rootFn?: () => string, ctx?: ExtensionContext): string {
 
 let activeServer: RunningServer | null = null;
 
-export async function runPlan(root: string, multiplier: number): Promise<{ moduleTree: string[] }> {
-	const scanResult = await scan(root);
-	const modulesDir = join(root, ".kaioken");
-	await mkdir(modulesDir, { recursive: true });
+/**
+ * Build the model client for the active session.
+ *
+ * Returns null when no model is bound, so every generative stage can fall back
+ * to a deterministic path instead of failing: an offline user still gets a
+ * usable plan, just a mechanical one.
+ */
+export function clientFor(ctx: ExtensionContext): ModelClient | null {
+	const model = ctx.model;
+	if (!model) return null;
+	// The bridge owns the transport; the core only ever sees the port.
+	const models = (ctx as unknown as { models?: Models }).models;
+	if (!models) return null;
+	return new PiAiClient(models, {
+		provider: String(model.provider),
+		model: model.id,
+		...(ctx.thinkingLevel ? { reasoning: ctx.thinkingLevel } : {}),
+	});
+}
 
-	// Group files by top-level directory
-	const groups: Record<string, string[]> = {};
+/** The deterministic plan, used when no model is reachable. */
+async function mechanicalPlan(root: string, multiplier: number): Promise<ModulePlan> {
+	const scanResult = await scan(root);
+
+	const groups = new Map<string, string[]>();
 	for (const file of scanResult.files) {
 		const parts = file.path.split(/[\\/]/);
-		const top = parts[0] || "root";
-		(groups[top] ??= []).push(file.path);
+		const top = parts.length > 1 ? parts[0] : "root";
+		const list = groups.get(top as string);
+		if (list) list.push(file.path);
+		else groups.set(top as string, [file.path]);
 	}
 
-	const moduleEntries = Object.entries(groups).map(([id, files]) => ({
-		id,
-		title: `${id.toUpperCase()} Module`,
-		files: files.slice(0, 50),
-	}));
+	return {
+		version: 1,
+		generatedAt: new Date().toISOString(),
+		multiplier,
+		modules: [...groups.entries()].map(([id, files]) => ({
+			id: id as string,
+			name: `${(id as string).toUpperCase()} Module`,
+			purpose: "Grouped by top-level directory (no model available).",
+			files: (files as string[]).sort(),
+		})),
+	};
+}
 
-	const modulesYaml = [
-		"# kaioken modules.yaml checkpoint",
-		`version: 1`,
-		`multiplier: ${multiplier}`,
-		`generatedAt: "${new Date().toISOString()}"`,
-		`modules:`,
-		...moduleEntries.flatMap((m) => [
-			`  - id: ${m.id}`,
-			`    title: "${m.title}"`,
-			`    files:`,
-			...m.files.map((f) => `      - ${f}`),
-		]),
-	].join("\n");
+export interface PlanRun {
+	moduleTree: string[];
+	/** Path the checkpoint was written to. */
+	planPath: string;
+	/** True when the model proposed the plan, false for the mechanical fallback. */
+	generated: boolean;
+	defects: string[];
+}
 
-	await writeFile(join(modulesDir, "modules.yaml"), modulesYaml, "utf8");
+/**
+ * Propose a module plan and stop at the checkpoint.
+ *
+ * The stop is the point: `plan` is the cheap moment to correct a decomposition,
+ * so it writes an editable YAML file and returns without generating anything
+ * downstream. Every later stage reads that file back.
+ */
+export async function runPlan(
+	root: string,
+	multiplier: number,
+	client?: ModelClient | null,
+): Promise<PlanRun> {
+	const scanResult = await scan(root);
+	const index = await readIndexArtifact(root).catch(() => null);
+
+	let plan: ModulePlan;
+	let generated = false;
+	const defects: string[] = [];
+
+	if (client) {
+		const result = await proposeModulePlan(scanResult, index, client, { multiplier });
+		plan = result.plan;
+		generated = true;
+		for (const defect of result.validation.defects) {
+			defects.push(`[${defect.severity}] ${defect.message}`);
+		}
+	} else {
+		plan = await mechanicalPlan(root, multiplier);
+		const validation = validatePlan(plan, scanResult);
+		for (const defect of validation.defects) {
+			defects.push(`[${defect.severity}] ${defect.message}`);
+		}
+	}
+
+	const planPath = await writeModulePlan(root, plan);
 
 	const outline = [
-		"modules.yaml outline:",
-		...moduleEntries.map((m) => `  - ${m.id} (${m.files.length} file${m.files.length === 1 ? "" : "s"})`),
+		`module plan (${generated ? "model" : "mechanical"}) — ${plan.modules.length} module(s):`,
+		...plan.modules.map((m) => `  - ${m.id} (${m.files.length} file${m.files.length === 1 ? "" : "s"})`),
+		"",
+		`Checkpoint written: ${planPath}`,
+		"Edit it, then run /kaioken-cards to continue.",
 	];
 
-	return { moduleTree: outline };
+	return { moduleTree: outline, planPath, generated, defects };
 }
 
 export function registerCommands(
@@ -283,8 +359,11 @@ export function registerCommands(
 			const m = parseMult(args);
 			if (!(await spendGate.confirm(ctx, "plan", m))) return;
 
-			const out = await runPlan(r, m);
-			ctx.ui?.notify?.(`modules.yaml written — REVIEW, then /kaioken-cards ${args || `×${m}`}`, "info");
+			const out = await runPlan(r, m, clientFor(ctx));
+			const note = out.generated
+				? "modules.yaml written by the model"
+				: "modules.yaml written mechanically (no model bound)";
+			ctx.ui?.notify?.(`${note} — REVIEW, then /kaioken-cards ${args || `×${m}`}`, "info");
 			ctx.ui?.setWidget?.("kaioken", out.moduleTree.slice(0, 12));
 		},
 	});
@@ -293,9 +372,44 @@ export function registerCommands(
 	pi.registerCommand("kaioken-cards", {
 		description: "Generate knowledge cards from modules.yaml",
 		handler: async (args, ctx) => {
+			const r = resolveRoot(root, ctx);
 			const m = parseMult(args);
 			if (!(await spendGate.confirm(ctx, "cards", m))) return;
-			ctx.ui?.notify?.(`Cards generation confirmed (×${m}). Ready for pipeline execution.`, "info");
+
+			const plan = await readModulePlan(r);
+			if (!plan) {
+				ctx.ui?.notify?.("No module plan found. Run /kaioken-plan first.", "info");
+				return;
+			}
+
+			const client = clientFor(ctx);
+			if (!client) {
+				ctx.ui?.notify?.("No model bound; cards need one. Configure a model, then retry.", "info");
+				return;
+			}
+
+			const scanResult = await scan(r);
+			const index = await readIndexArtifact(r).catch(() => null);
+			const knownFiles = new Map(scanResult.files.map((f) => [f.path, f.hash]));
+
+			const results = await generateCards(plan, index, client, {
+				multiplier: m,
+				knownFiles,
+				onProgress: (id, done, total) => ctx.ui?.setStatus?.("kaioken", `cards ${done + 1}/${total}: ${id}`),
+			});
+
+			for (const result of results) await writeCard(r, result.card);
+
+			const ungrounded = results.reduce((n, x) => n + x.card.verification.ungrounded.length, 0);
+			ctx.ui?.setStatus?.("kaioken", "grounded · flash-high");
+			ctx.ui?.notify?.(
+				`Wrote ${results.length} card(s) to .kaioken/cards. ${ungrounded} ungrounded claim(s) reported in each card's verification.`,
+				"info",
+			);
+			ctx.ui?.setWidget?.(
+				"kaioken",
+				results.slice(0, 12).map((x) => `card ${x.card.moduleId}: ${x.card.verification.grounded} grounded`),
+			);
 		},
 	});
 

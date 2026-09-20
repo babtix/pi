@@ -1,5 +1,5 @@
 {
-  "name": "@kaioken/modelport",
+  "name": "@kaioken/plan",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -16,7 +16,11 @@
     "test": "vitest --run"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "0.85.1"
+    "@kaioken/index": "0.1.0",
+    "@kaioken/modelport": "0.1.0",
+    "@kaioken/provenance": "0.1.0",
+    "@kaioken/scan": "0.1.0",
+    "yaml": "2.9.0"
   },
   "devDependencies": {
     "vitest": "4.1.9"
