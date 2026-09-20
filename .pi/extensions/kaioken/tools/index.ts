@@ -24,8 +24,8 @@ export async function getSymbolOracle(root: string): Promise<SymbolOracle> {
 	if (cached) return new SymbolOracle(cached);
 	try {
 		const scanResult = await scan(root);
-		const indexResult = await buildIndex(root, scanResult);
-		return new SymbolOracle(indexResult);
+		const outcome = await buildIndex(scanResult);
+		return new SymbolOracle(outcome.index);
 	} catch {
 		return new SymbolOracle({
 			root,
