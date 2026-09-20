@@ -19,6 +19,7 @@
  */
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { CURTAIN, bootFrame, curtainEnabled, powerOffFrame } from "./curtain.ts";
+import { pinHeader, unpinHeader, type PinnedHeader } from "./layout.ts";
 import { blockWidth, stickyHeader, type HeaderInfo, type RepoState } from "./logo.ts";
 import { motionEnabled, sweepRule } from "./motion.ts";
 import { colorFromEnv, type Painter, type PaintTheme } from "./theme.ts";
@@ -40,6 +41,8 @@ export class KaiokenHeader implements Component {
 	private interval: NodeJS.Timeout | undefined;
 	/** The entrance plays once; after it lands the header is settled forever. */
 	private entranceDone = false;
+	/** What `pinHeader` needs to put Pi's layout back on dispose. */
+	private pinned: PinnedHeader | null = null;
 	private info: HeaderInfo;
 
 	constructor(tui: TUI, theme: PaintTheme, options: KaiokenHeaderOptions) {
@@ -52,6 +55,14 @@ export class KaiokenHeader implements Component {
 		// owns a timer — but only for as long as it is playing. A header that
 		// ticked forever would repaint an idle terminal every 45ms for nothing.
 		if (motionEnabled()) this.interval = setInterval(() => this.tick(), CURTAIN.frameMs);
+
+		// Lift the header out of the transcript so it stops scrolling away.
+		// Deferred by a frame because Pi installs its own layout root right
+		// after calling this factory, and rebuilding a tree that is about to be
+		// replaced would be undone immediately.
+		setTimeout(() => {
+			this.pinned = pinHeader(this.tui, this);
+		}, 0);
 	}
 
 	private get painter(): Painter {
@@ -135,6 +146,8 @@ export class KaiokenHeader implements Component {
 
 	dispose(): void {
 		this.stop();
+		unpinHeader(this.tui, this, this.pinned);
+		this.pinned = null;
 	}
 }
 
