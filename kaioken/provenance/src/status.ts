@@ -25,7 +25,7 @@ export async function readCardsSafe(root: string): Promise<Provenance[]> {
 			if (!file.endsWith(".json")) continue;
 			try {
 				const card = JSON.parse(await readFile(join(cardsDir, file), "utf8"));
-				if (card && card.sources) {
+				if (card?.sources) {
 					out.push({
 						document: `card:${card.moduleId || file.replace(/\.json$/, "")}`,
 						generatedAt: card.generatedAt || "",

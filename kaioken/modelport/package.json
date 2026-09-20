@@ -1,5 +1,5 @@
 {
-  "name": "@kaioken/graph",
+  "name": "@kaioken/modelport",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -11,12 +11,11 @@
       "default": "./dist/index.js"
     }
   },
-  "dependencies": {
-    "@kaioken/provenance": "0.1.0",
-    "@kaioken/scan": "0.1.0"
-  },
   "scripts": {
     "test": "vitest --run"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.85.1"
   },
   "devDependencies": {
     "vitest": "4.1.9"

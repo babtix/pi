@@ -16,5 +16,11 @@
     "@kaioken/provenance": "0.1.0",
     "@kaioken/scan": "0.1.0",
     "@kaioken/skills": "0.1.0"
+  },
+  "scripts": {
+    "test": "vitest --run"
+  },
+  "devDependencies": {
+    "vitest": "4.1.9"
   }
 }

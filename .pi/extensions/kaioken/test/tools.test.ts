@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { resolveExcerpt } from "../../../../kaioken/index/src/anchors.ts";
+import { writeIndexArtifact } from "../../../../kaioken/index/src/artifact.ts";
+import { buildIndex } from "../../../../kaioken/index/src/build.ts";
+import { scan } from "../../../../kaioken/scan/src/scan.ts";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -13,9 +16,43 @@ function createFakePi() {
 	return { pi: pi as any, tools };
 }
 
+/**
+ * Probe fixture.
+ *
+ * These tests are hermetic on purpose. Pointing the oracle at the live monorepo
+ * would (a) make them depend on an uncommitted `.kaioken/index.json` and
+ * (b) fall back to a full-repo Tree-sitter scan on a cold checkout, which takes
+ * far longer than a unit-test timeout. A three-file fixture indexed once here
+ * gives the same assertions at a fraction of the cost.
+ */
+const root = await mkdtemp(join(tmpdir(), "kaioken-bridge-"));
+
+await mkdir(join(root, "src"), { recursive: true });
+await writeFile(
+	join(root, "src", "alpha.ts"),
+	[
+		"export interface Alpha {",
+		"\tname: string;",
+		"}",
+		"",
+		"export function alphaSearch(query: string): string[] {",
+		"\treturn [query];",
+		"}",
+		"",
+	].join("\n"),
+	"utf8",
+);
+await writeFile(join(root, "src", "beta.ts"), 'import { alphaSearch } from "./alpha.ts";\n\nalphaSearch("x");\n', "utf8");
+await writeFile(join(root, "package.json"), JSON.stringify({ name: "fixture", version: "1.0.0" }), "utf8");
+
+// Index once so every probe reads the cached artifact rather than re-scanning.
+{
+	const outcome = await buildIndex(await scan(root));
+	await writeIndexArtifact(root, outcome.index);
+}
+
 describe("Phase 3: Kaioken Grounding Tools & Probes", () => {
 	const fake = createFakePi();
-	const root = process.cwd();
 	registerTools(fake.pi, () => root);
 
 	const fakeCtx = { cwd: root } as any;
@@ -46,23 +83,23 @@ describe("Phase 3: Kaioken Grounding Tools & Probes", () => {
 
 	it("Probe 1 (positive): returns AST location when symbol exists", async () => {
 		const tool = fake.tools.get("kaioken_symbol_lookup");
-		const result = await tool.execute("call-2", { query: "bm25Search" }, undefined, undefined, fakeCtx);
+		const result = await tool.execute("call-2", { query: "alphaSearch" }, undefined, undefined, fakeCtx);
 		const hits = JSON.parse(result.content[0].text);
 		expect(Array.isArray(hits)).toBe(true);
 		expect(hits.length).toBeGreaterThan(0);
-		expect(hits[0].symbol.name).toBe("bm25Search");
+		expect(hits[0].symbol.name).toBe("alphaSearch");
 	});
 
 	// Probe 2: Quote a function body with byte accuracy
 	it("Probe 2: read exact line range matches resolveExcerpt byte-accurately", async () => {
 		const tool = fake.tools.get("kaioken_read_file");
-		const relPath = ".pi/extensions/kaioken/index.ts";
-		const start = 1;
-		const end = 5;
+		const relPath = "src/alpha.ts";
+		const start = 5;
+		const end = 7;
 
 		const result = await tool.execute("call-3", { path: relPath, start, end }, undefined, undefined, fakeCtx);
 		const quotedExcerpt = result.content[0].text;
-		expect(quotedExcerpt).toContain("registerTools");
+		expect(quotedExcerpt).toContain("alphaSearch");
 
 		// Verify against resolveExcerpt from @kaioken/index
 		const fullSource = await readFile(join(root, relPath), "utf8");
@@ -125,12 +162,14 @@ describe("Phase 3: Kaioken Grounding Tools & Probes", () => {
 	// Probe 4: Blast radius / impact analysis
 	it("Probe 4: predicts blast radius using AST dependents, not guessing", async () => {
 		const tool = fake.tools.get("kaioken_impact");
-		const result = await tool.execute("call-4", { symbol: "scan" }, undefined, undefined, fakeCtx);
+		const result = await tool.execute("call-4", { symbol: "alphaSearch" }, undefined, undefined, fakeCtx);
 		const report = JSON.parse(result.content[0].text);
 		expect(report).toBeDefined();
-		expect(report.description).toBe("scan");
+		expect(report.description).toBe("alphaSearch");
 		expect(Array.isArray(report.symbols)).toBe(true);
 		expect(Array.isArray(report.dependents)).toBe(true);
+		// `src/beta.ts` imports alphaSearch, so it must be reported as affected.
+		expect(report.dependents.some((d: any) => JSON.stringify(d).includes("beta.ts"))).toBe(true);
 	});
 
 	// Probe 5: Stale-doc drift check
