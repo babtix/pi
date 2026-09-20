@@ -37,6 +37,43 @@ To learn more about Pi:
 
 For Slack/chat automation and workflows see [earendil-works/pi-chat](https://github.com/earendil-works/pi-chat).
 
+## Kaioken — the offline truth layer
+
+This fork adds **Kaioken**, a deterministic knowledge engine that runs inside the
+harness. Pi supplies the hands, the model supplies the reasoning, and Kaioken
+supplies the truth: it answers questions about a repository from an index of the
+repository rather than from a model's memory, and it refuses to call work
+finished until the tests say so.
+
+Everything below the generative stages is offline — no network, no API key, no
+model. `npm run check:kaioken:fresh` proves it by running scan, index, oracle,
+anchors, search, impact and drift against a throwaway repository and asserting
+nothing was written.
+
+```bash
+pi install npm:kaioken-pi          # the packaged extension, skills and themes
+# or, in this repository, the dev path:
+.pi/extensions/kaioken/
+```
+
+| Piece | Where |
+|-------|-------|
+| Offline core (17 packages) | [`kaioken/`](kaioken/README.md) |
+| Pi bridge: tools, commands, hooks, prompt | [`.pi/extensions/kaioken/`](.pi/extensions/kaioken) |
+| Themes (`kaioken`, `kaioken-light`) | [`.pi/themes/`](.pi/themes) |
+| Package build + verification | `npm run pack:kaioken` |
+
+```bash
+npm run build:kaioken        # build all 17 core packages
+npm run check:kaioken        # typecheck, assert no network imports, assert barrels
+npm run check:kaioken:fresh  # prove the offline chain on an untouched repo
+npm run pack:kaioken         # build and verify the publishable Pi package
+node kaioken/evals/bin.mjs   # the grounding eval gate (exits non-zero on a miss)
+```
+
+See [`kaioken/README.md`](kaioken/README.md) for the architecture, the ten
+invariants, and the design notes.
+
 ## Permissions & Containerization
 
 Pi does not include a built-in permission system for restricting filesystem, process, network, or credential access. By default, it runs with the permissions of the user and process that launched it.
