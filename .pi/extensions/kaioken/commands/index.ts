@@ -23,6 +23,17 @@ import {
 } from "../../../../kaioken/modelport/src/spend.ts";
 import { proposeModulePlan, validatePlan, writeModulePlan, type ModulePlan } from "../../../../kaioken/plan/src/index.ts";
 import { generateCards, readModulePlan, writeCard } from "../../../../kaioken/plan/src/index.ts";
+import {
+	groundingDefects,
+	planWiki,
+	readBrief,
+	readWikiPlan,
+	runWiki,
+	writeProvenance,
+	writeWikiDocument,
+	writeWikiIndex,
+	writeWikiPlan,
+} from "../../../../kaioken/wiki/src/index.ts";
 
 export interface SpendEstimate {
 	action: string;
@@ -417,9 +428,61 @@ export function registerCommands(
 	pi.registerCommand("kaioken-wiki", {
 		description: "Cascade wiki chapters generation",
 		handler: async (args, ctx) => {
+			const r = resolveRoot(root, ctx);
 			const m = parseMult(args);
 			if (!(await spendGate.confirm(ctx, "wiki", m))) return;
-			ctx.ui?.notify?.(`Wiki generation confirmed (×${m}). Ready for cascade execution.`, "info");
+
+			const client = clientFor(ctx);
+			if (!client) {
+				ctx.ui?.notify?.("No model bound; the wiki cascade needs one.", "info");
+				return;
+			}
+
+			const scanResult = await scan(r);
+			const index = await readIndexArtifact(r).catch(() => null);
+
+			// `--plan` is the checkpoint: outline only, then stop.
+			if (/--plan/.test(args)) {
+				const { plan } = await planWiki({ scan: scanResult, index, client, multiplier: m });
+				const path = await writeWikiPlan(r, plan);
+				ctx.ui?.notify?.(`Wrote ${plan.chapters.length} chapter(s) to ${path} — edit, then rerun without --plan.`, "info");
+				ctx.ui?.setWidget?.("kaioken", plan.chapters.slice(0, 12).map((c) => `chapter ${c.id}: ${c.title}`));
+				return;
+			}
+
+			const plan = await readWikiPlan(r);
+			if (!plan) {
+				ctx.ui?.notify?.("No wiki plan found. Run /kaioken-wiki --plan first.", "info");
+				return;
+			}
+
+			const brief = (await readBrief(r)) ?? undefined;
+			const out = await runWiki({
+				root: r,
+				plan,
+				scan: scanResult,
+				index,
+				client,
+				multiplier: m,
+				...(brief ? { brief } : {}),
+				onDocument: (doc) => writeWikiDocument(r, doc),
+				onProgress: (label, done, total) => ctx.ui?.setStatus?.("kaioken", `wiki ${done}/${total}: ${label}`),
+			});
+
+			// Persist the resolved sections so a rerun reuses the same ids.
+			await writeWikiPlan(r, out.plan);
+			await writeProvenance(
+				r,
+				out.documents.map((d) => d.provenance),
+			);
+			await writeWikiIndex(r, out.plan);
+
+			const defects = out.documents.reduce((n, d) => n + groundingDefects(d.verification.defects).length, 0);
+			ctx.ui?.setStatus?.("kaioken", "grounded · flash-high");
+			ctx.ui?.notify?.(
+				`Wrote ${out.documents.length} document(s); ${defects} ungrounded claim(s) reported${out.failures.length ? `, ${out.failures.length} failure(s)` : ""}.`,
+				"info",
+			);
 		},
 	});
 
@@ -427,9 +490,60 @@ export function registerCommands(
 	pi.registerCommand("kaioken-update", {
 		description: "Update stale documents from provenance diff",
 		handler: async (args, ctx) => {
+			const r = resolveRoot(root, ctx);
 			const m = parseMult(args);
 			if (!(await spendGate.confirm(ctx, "update", m))) return;
-			ctx.ui?.notify?.(`Incremental update confirmed (×${m}). Ready for update execution.`, "info");
+
+			const drift = await checkDrift(r);
+			const stale = drift.documents.filter((d) => d.freshness !== "current");
+
+			if (stale.length === 0) {
+				ctx.ui?.notify?.("Nothing is stale. No spend, no regeneration.", "info");
+				return;
+			}
+
+			if (/--dry/.test(args)) {
+				ctx.ui?.notify?.(
+					`${stale.length} stale document(s): ${stale.slice(0, 8).map((d) => d.document).join(", ")}`,
+					"info",
+				);
+				return;
+			}
+
+			const client = clientFor(ctx);
+			if (!client) {
+				ctx.ui?.notify?.("No model bound; updating needs one.", "info");
+				return;
+			}
+
+			// Regenerate only the stale documents, by path, reusing the plan.
+			const plan = await readWikiPlan(r);
+			if (!plan) {
+				ctx.ui?.notify?.("No wiki plan found; nothing to update.", "info");
+				return;
+			}
+
+			const scanResult = await scan(r);
+			const index = await readIndexArtifact(r).catch(() => null);
+			const brief = (await readBrief(r)) ?? undefined;
+
+			const out = await runWiki({
+				root: r,
+				plan,
+				scan: scanResult,
+				index,
+				client,
+				multiplier: m,
+				onlyDocuments: stale.map((d) => d.document),
+				...(brief ? { brief } : {}),
+				onDocument: (doc) => writeWikiDocument(r, doc),
+			});
+
+			await writeProvenance(
+				r,
+				out.documents.map((d) => d.provenance),
+			);
+			ctx.ui?.notify?.(`Regenerated ${out.documents.length} of ${stale.length} stale document(s).`, "info");
 		},
 	});
 

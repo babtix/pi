@@ -10,6 +10,14 @@ export {
 	parseMultiplier,
 } from "./port.ts";
 export {
+	DEFAULT_CONCURRENCY,
+	effectiveConcurrency,
+	FREE_TIER_CONCURRENCY,
+	isFreeModel,
+	mapLimit,
+	mapLimitSettled,
+} from "./pool.ts";
+export {
 	contextTokensFor,
 	DEFAULT_CONTEXT_TOKENS,
 	describeSpend,
