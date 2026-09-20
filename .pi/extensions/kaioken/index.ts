@@ -39,7 +39,7 @@ const THEME_NAME = "kaioken";
  * different theme is left where they are — the extension should not overrule a
  * deliberate choice, only fill in a default.
  */
-function applyKaiokenTheme(ctx: ExtensionContext): void {
+export function applyKaiokenTheme(ctx: ExtensionContext): void {
 	if (process.env.KAIOKEN_THEME === "0") return;
 
 	const instance = ctx.ui.getTheme(THEME_NAME);
@@ -55,8 +55,15 @@ function applyKaiokenTheme(ctx: ExtensionContext): void {
 	ctx.ui.setStatus("kaioken", "theme · kaioken");
 }
 
-/** The theme name from Pi's own settings, or undefined when it cannot be read. */
-function readConfiguredTheme(): string | undefined {
+/**
+ * The theme name from Pi's own settings, or undefined when it cannot be read.
+ *
+ * `KAIOKEN_THEME_SETTING` overrides the file, which is what makes the
+ * "do not overrule the user" branch testable without writing to a real home
+ * directory.
+ */
+export function readConfiguredTheme(env: NodeJS.ProcessEnv = process.env): string | undefined {
+	if (env.KAIOKEN_THEME_SETTING) return env.KAIOKEN_THEME_SETTING;
 	try {
 		const { readFileSync } = require("node:fs") as typeof import("node:fs");
 		const { homedir } = require("node:os") as typeof import("node:os");

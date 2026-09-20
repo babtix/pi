@@ -68,9 +68,16 @@ export interface FakePi {
 	/** Widgets pushed through `ctx.ui.setWidget`. */
 	widgets: Array<{ id: string; lines: string[] }>;
 	/** A context whose `ui` records what the bridge displays. */
-	ctx: (cwd?: string) => ExtensionContext;
+	ctx: (
+		cwd?: string,
+		options?: { mode?: string; theme?: unknown },
+	) => ExtensionContext;
 	/** Every status text the bridge has set, newest last. */
 	statusText: () => string[];
+	/** Theme names the bridge asked for. */
+	themeLookups: string[];
+	/** Theme values the bridge applied. */
+	themesApplied: unknown[];
 }
 
 export function fakePi(): FakePi {
@@ -79,6 +86,10 @@ export function fakePi(): FakePi {
 	const hooks: Record<string, any[]> = {};
 	const status: Array<{ id: string; text: string }> = [];
 	const widgets: Array<{ id: string; lines: string[] }> = [];
+	/** Theme names the bridge asked for, in order. */
+	const themeLookups: string[] = [];
+	/** Theme values the bridge applied, in order. */
+	const themesApplied: unknown[] = [];
 
 	const pi = {
 		registerTool: (tool: any) => {
@@ -92,15 +103,26 @@ export function fakePi(): FakePi {
 		},
 	} as unknown as ExtensionAPI;
 
-	const ctx = (cwd?: string) =>
+	const ctx = (cwd?: string, options?: { mode?: string; theme?: unknown }) =>
 		({
 			cwd: cwd ?? process.cwd(),
+			// `mode` matters: the header and the theme are TUI-only, and the
+			// bridge checks it before touching either.
+			mode: options?.mode ?? "tui",
 			ui: {
 				setStatus: (id: string, text: string) => {
 					status.push({ id, text });
 				},
 				setWidget: (id: string, lines: string[]) => {
 					widgets.push({ id, lines });
+				},
+				getTheme: (name: string) => {
+					themeLookups.push(name);
+					return options?.theme;
+				},
+				setTheme: (value: unknown) => {
+					themesApplied.push(value);
+					return { success: true };
 				},
 			},
 		}) as unknown as ExtensionContext;
@@ -127,6 +149,8 @@ export function fakePi(): FakePi {
 		widgets,
 		ctx,
 		statusText: () => status.map((s) => s.text),
+		themeLookups,
+		themesApplied,
 	};
 }
 
