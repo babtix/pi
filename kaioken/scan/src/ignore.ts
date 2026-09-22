@@ -48,6 +48,10 @@ interface Layer {
 	matcher: Ignore;
 }
 
+export interface IgnoreStackOptions {
+	ignoreCase?: boolean;
+}
+
 /**
  * Gitignore semantics are per-directory: a pattern in `src/.gitignore` is
  * relative to `src/`. The stack mirrors that — a layer is pushed on entering a
@@ -55,13 +59,19 @@ interface Layer {
  */
 export class IgnoreStack {
 	private readonly layers: readonly Layer[];
+	private readonly ignoreCase: boolean;
 
-	private constructor(layers: readonly Layer[]) {
+	private constructor(layers: readonly Layer[], options?: IgnoreStackOptions) {
 		this.layers = layers;
+		this.ignoreCase = options?.ignoreCase ?? (process.platform === "win32");
 	}
 
-	static fromPatterns(rootPatterns: readonly string[]): IgnoreStack {
-		return new IgnoreStack([{ base: "", matcher: makeIgnore().add([...rootPatterns]) }]);
+	static fromPatterns(rootPatterns: readonly string[], options?: IgnoreStackOptions): IgnoreStack {
+		const ignoreCase = options?.ignoreCase ?? (process.platform === "win32");
+		return new IgnoreStack(
+			[{ base: "", matcher: makeIgnore({ ignorecase: ignoreCase }).add([...rootPatterns]) }],
+			{ ignoreCase },
+		);
 	}
 
 	/**
@@ -70,23 +80,48 @@ export class IgnoreStack {
 	 * of them leaking its own into the other.
 	 */
 	withLayer(base: string, patterns: string[]): IgnoreStack {
-		return new IgnoreStack([...this.layers, { base, matcher: makeIgnore().add(patterns) }]);
+		return new IgnoreStack(
+			[
+				...this.layers,
+				{ base, matcher: makeIgnore({ ignorecase: this.ignoreCase }).add(patterns) },
+			],
+			{ ignoreCase: this.ignoreCase },
+		);
 	}
 
 	/**
 	 * `relPath` is repo-relative POSIX. Directories must be passed with a trailing
 	 * slash so directory-only patterns (`build/`) match.
+	 *
+	 * Later rules override earlier ones; a negated file is re-included unless a
+	 * parent directory is excluded.
 	 */
 	ignores(relPath: string): boolean {
-		for (const layer of this.layers) {
+		let idx = relPath.indexOf("/");
+		while (idx !== -1 && idx < relPath.length - 1) {
+			const parentDir = relPath.slice(0, idx + 1);
+			if (this.ignoresDirect(parentDir)) return true;
+			idx = relPath.indexOf("/", idx + 1);
+		}
+		return this.ignoresDirect(relPath);
+	}
+
+	private ignoresDirect(path: string): boolean {
+		for (let i = this.layers.length - 1; i >= 0; i--) {
+			const layer = this.layers[i]!;
 			if (layer.base === "") {
-				if (layer.matcher.ignores(relPath)) return true;
+				const result = layer.matcher.test(path);
+				if (result.unignored) return false;
+				if (result.ignored) return true;
 				continue;
 			}
 			const prefix = `${layer.base}/`;
-			if (!relPath.startsWith(prefix)) continue;
-			const scoped = relPath.slice(prefix.length);
-			if (scoped && layer.matcher.ignores(scoped)) return true;
+			if (!path.startsWith(prefix)) continue;
+			const scoped = path.slice(prefix.length);
+			if (!scoped) continue;
+			const result = layer.matcher.test(scoped);
+			if (result.unignored) return false;
+			if (result.ignored) return true;
 		}
 		return false;
 	}

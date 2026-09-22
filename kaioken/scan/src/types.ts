@@ -34,10 +34,14 @@ export interface ScanOptions {
 	ignore?: string[];
 	/** Files at or above this size are never read past the detection window. */
 	maxReadBytes?: number;
+	/** Maximum bytes scanned for secrets in large text files. Defaults to 16MB. */
+	maxSecretScanBytes?: number;
 	/** Byte threshold above which a binary file is flagged `large_binary`. */
 	largeBinaryBytes?: number;
 	/** Skip loading .gitignore / .kaiokenignore. Used by tests. */
 	noIgnoreFiles?: boolean;
 	/** Follow symlinked directories. Off by default — cycles are not worth the risk. */
 	followSymlinks?: boolean;
+	/** Whether path matching and directory deduplication are case-insensitive. Defaults to true on Windows, false on Linux/other. */
+	ignoreCase?: boolean;
 }

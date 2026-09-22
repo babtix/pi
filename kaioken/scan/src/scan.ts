@@ -3,15 +3,17 @@ import { createReadStream } from "node:fs";
 import type { Dirent } from "node:fs";
 import { open, readdir, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { DEFAULT_IGNORES, IgnoreStack, readIgnoreFiles } from "./ignore.ts";
 import { detectLanguage } from "./language.ts";
-import { classifyRisk, isBinary } from "./risk.ts";
-import type { FileRecord, ScanOptions, ScanResult } from "./types.ts";
+import { classifyRisk, hasCredentialContent, hasPrivateKeyContent, isBinary } from "./risk.ts";
+import type { FileRecord, Risk, ScanOptions, ScanResult } from "./types.ts";
 
 /** Bytes read for language, binary and risk detection when a file is not read whole. */
 const DETECTION_WINDOW = 64 * 1024;
 
 const DEFAULT_MAX_READ_BYTES = 4 * 1024 * 1024;
+const DEFAULT_MAX_SECRET_SCAN_BYTES = 16 * 1024 * 1024;
 const DEFAULT_LARGE_BINARY_BYTES = 1024 * 1024;
 
 /**
@@ -22,10 +24,12 @@ const DEFAULT_LARGE_BINARY_BYTES = 1024 * 1024;
 export async function scan(root: string, options: ScanOptions = {}): Promise<ScanResult> {
 	const absRoot = resolve(root);
 	const maxReadBytes = options.maxReadBytes ?? DEFAULT_MAX_READ_BYTES;
+	const maxSecretScanBytes = options.maxSecretScanBytes ?? DEFAULT_MAX_SECRET_SCAN_BYTES;
 	const largeBinaryBytes = options.largeBinaryBytes ?? DEFAULT_LARGE_BINARY_BYTES;
+	const ignoreCase = options.ignoreCase ?? (process.platform === "win32");
 
 	const rootPatterns = [...DEFAULT_IGNORES, ...(options.ignore ?? [])];
-	let stack = IgnoreStack.fromPatterns(rootPatterns);
+	let stack = IgnoreStack.fromPatterns(rootPatterns, { ignoreCase });
 	if (!options.noIgnoreFiles) {
 		const rootIgnores = readIgnoreFiles(absRoot);
 		if (rootIgnores.length > 0) stack = stack.withLayer("", rootIgnores);
@@ -48,8 +52,10 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
 
 	async function walk(absDir: string, relDir: string, inherited: IgnoreStack): Promise<void> {
 		// Guard against symlink cycles even when following is off, since a
-		// hardlinked or junctioned directory can still reappear.
-		const realKey = absDir.toLowerCase();
+		// hardlinked or junctioned directory can still reappear. Preserve case on
+		// case-sensitive platforms so sibling directories like Component/ and component/
+		// are not conflated.
+		const realKey = ignoreCase ? absDir.toLowerCase() : absDir;
 		if (seenDirs.has(realKey)) return;
 		seenDirs.add(realKey);
 
@@ -110,8 +116,6 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
 		}
 
 		const readWhole = size <= maxReadBytes;
-		let head: Buffer;
-		let hash: string;
 
 		if (readWhole) {
 			let handle: Awaited<ReturnType<typeof open>>;
@@ -120,6 +124,8 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
 			} catch {
 				return null;
 			}
+			let head: Buffer;
+			let hash: string;
 			try {
 				const buf = await handle.readFile();
 				head = buf;
@@ -129,20 +135,53 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
 			} finally {
 				await handle.close();
 			}
-		} else {
-			// Too large to hold: stream the hash, read only the detection window.
-			try {
-				head = await readHead(absPath, DETECTION_WINDOW);
-				hash = await hashStream(absPath);
-			} catch {
-				return null;
-			}
+
+			const window = head.subarray(0, DETECTION_WINDOW);
+			const binary = isBinary(window);
+			const language = detectLanguage(relPath, binary ? null : window);
+			const text = binary ? "" : head.toString("utf8");
+
+			return {
+				path: relPath,
+				hash,
+				size,
+				language,
+				binary,
+				risk: classifyRisk({ path: relPath, size, binary, text, largeBinaryBytes }),
+			};
+		}
+
+		// Too large to hold in memory whole: read detection window for language/binary,
+		// stream hash and scan for secrets across chunks.
+		let head: Buffer;
+		try {
+			head = await readHead(absPath, DETECTION_WINDOW);
+		} catch {
+			return null;
 		}
 
 		const window = head.subarray(0, DETECTION_WINDOW);
 		const binary = isBinary(window);
 		const language = detectLanguage(relPath, binary ? null : window);
 		const text = binary ? "" : head.toString("utf8");
+		const risks = new Set<Risk>(
+			classifyRisk({ path: relPath, size, binary, text, largeBinaryBytes }),
+		);
+
+		let hash: string;
+		try {
+			const streamResult = await streamHashAndScan(absPath, {
+				scanSecrets: !binary,
+				maxSecretScanBytes,
+				hasCredentials: risks.has("credentials"),
+				hasPrivateKey: risks.has("private_key"),
+			});
+			hash = streamResult.hash;
+			if (streamResult.hasCredentials) risks.add("credentials");
+			if (streamResult.hasPrivateKey) risks.add("private_key");
+		} catch {
+			return null;
+		}
 
 		return {
 			path: relPath,
@@ -150,7 +189,7 @@ export async function scan(root: string, options: ScanOptions = {}): Promise<Sca
 			size,
 			language,
 			binary,
-			risk: classifyRisk({ path: relPath, size, binary, text, largeBinaryBytes }),
+			risk: [...risks].sort(),
 		};
 	}
 }
@@ -166,13 +205,61 @@ async function readHead(absPath: string, bytes: number): Promise<Buffer> {
 	}
 }
 
-function hashStream(absPath: string): Promise<string> {
+function streamHashAndScan(
+	absPath: string,
+	options: {
+		scanSecrets: boolean;
+		maxSecretScanBytes: number;
+		hasCredentials: boolean;
+		hasPrivateKey: boolean;
+	},
+): Promise<{ hash: string; hasCredentials: boolean; hasPrivateKey: boolean }> {
 	return new Promise((resolvePromise, rejectPromise) => {
 		const hash = createHash("sha256");
 		const stream = createReadStream(absPath);
-		stream.on("data", (chunk) => hash.update(chunk));
+		const decoder = new StringDecoder("utf8");
+		let scannedBytes = 0;
+		let overlap = "";
+		let hasCredentials = options.hasCredentials;
+		let hasPrivateKey = options.hasPrivateKey;
+		const scanSecrets = options.scanSecrets;
+		const maxBytes = options.maxSecretScanBytes;
+
+		stream.on("data", (chunk: string | Buffer) => {
+			const buf = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+			hash.update(buf);
+
+			if (scanSecrets && scannedBytes < maxBytes && (!hasCredentials || !hasPrivateKey)) {
+				scannedBytes += buf.length;
+				const text = typeof chunk === "string" ? chunk : decoder.write(chunk);
+				const textChunk = overlap + text;
+				if (!hasPrivateKey && hasPrivateKeyContent(textChunk)) {
+					hasPrivateKey = true;
+				}
+				if (!hasCredentials && hasCredentialContent(textChunk)) {
+					hasCredentials = true;
+				}
+				overlap = textChunk.slice(-4096);
+			}
+		});
+
 		stream.on("error", rejectPromise);
-		stream.on("end", () => resolvePromise(hash.digest("hex")));
+		stream.on("end", () => {
+			if (scanSecrets && (!hasCredentials || !hasPrivateKey)) {
+				const remaining = overlap + decoder.end();
+				if (!hasPrivateKey && hasPrivateKeyContent(remaining)) {
+					hasPrivateKey = true;
+				}
+				if (!hasCredentials && hasCredentialContent(remaining)) {
+					hasCredentials = true;
+				}
+			}
+			resolvePromise({
+				hash: hash.digest("hex"),
+				hasCredentials,
+				hasPrivateKey,
+			});
+		});
 	});
 }
 

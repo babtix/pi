@@ -10,7 +10,7 @@ import type { Risk } from "./types.ts";
  */
 
 const PRIVATE_KEY_CONTENT = [
-	/-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----/,
+	/-----BEGIN (?:[A-Z0-9_ -]+ )?PRIVATE KEY(?: BLOCK)?-----/,
 	/PuTTY-User-Key-File-\d/,
 ];
 
@@ -49,11 +49,22 @@ const ENV_TEMPLATE_SUFFIXES = [".example", ".sample", ".template", ".dist", ".de
 const CREDENTIAL_CONTENT = [
 	/\bAKIA[0-9A-Z]{16}\b/, // AWS access key id
 	/\bASIA[0-9A-Z]{16}\b/, // AWS temporary access key id
-	/\bgh[pousr]_[A-Za-z0-9]{36,}\b/, // GitHub token
-	/\bxox[baprs]-[A-Za-z0-9-]{10,}/, // Slack token
+	/\bgh[pousr]_[A-Za-z0-9]{36,}\b/, // GitHub classic token
+	/\bgithub_pat_[A-Za-z0-9_]{22,}\b/, // GitHub fine-grained PAT
+	/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/, // Slack token
 	/\bAIza[0-9A-Za-z_-]{35}\b/, // Google API key
-	/\bsk_live_[0-9a-zA-Z]{24,}\b/, // Stripe live secret
-	/\bsk-ant-[A-Za-z0-9_-]{20,}/, // Anthropic
+	/\bya29\.[0-9A-Za-z_-]{20,}\b/, // GCP OAuth / access token
+	/\b[sr]k_live_[0-9a-zA-Z]{24,}\b/, // Stripe live secret or restricted key
+	/\bsk-ant-[A-Za-z0-9_-]{20,}\b/, // Anthropic
+	/\bsk-(?:proj|admin|svcacct)-[A-Za-z0-9_-]{20,}\b/, // OpenAI project/admin key
+	/\bsk-[A-Za-z0-9]{32,}\b/, // OpenAI key
+	/\bhf_[A-Za-z0-9]{20,}\b/, // HuggingFace token
+	/\bpypi-[A-Za-z0-9_-]{20,}\b/, // PyPI API token
+	/\bDefaultEndpointsProtocol=https?;[^\s"']*/, // Azure Storage connection string
+	/\b(?:SharedAccessKey|AccountKey)=[A-Za-z0-9+/=]{40,}\b/, // Azure account / access key
+	/\bSharedAccessSignature(?:=|\s+)[^\s"']{20,}/, // Azure SAS token
+	/\b(?:sv=\d{4}-\d{2}-\d{2}[^\s"']*sig=|sig=[A-Za-z0-9%+/=]{20,}[^\s"']*sv=\d{4}-\d{2}-\d{2})[A-Za-z0-9%+/=]{20,}/, // Azure SAS query token
+	/\b[Bb]earer\s+(?!example|sample|test|placeholder|your|dummy|fake)[A-Za-z0-9_\-\.~+/]{20,}\b/, // Bearer auth header
 	/\bglpat-[A-Za-z0-9_-]{20,}\b/, // GitLab PAT
 	/\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/, // JWT
 ];
@@ -175,7 +186,7 @@ export function classifyRisk(input: RiskInput): Risk[] {
 
 	// Content rules only apply to text. Scanning binary for these is noise.
 	if (!input.binary && input.text) {
-		if (PRIVATE_KEY_CONTENT.some((re) => re.test(input.text))) risk.add("private_key");
+		if (hasPrivateKeyContent(input.text)) risk.add("private_key");
 		if (hasCredentialContent(input.text)) risk.add("credentials");
 		if (hasGeneratedBanner(input.text)) risk.add("generated");
 	}
@@ -183,12 +194,16 @@ export function classifyRisk(input: RiskInput): Risk[] {
 	return [...risk].sort();
 }
 
+export function hasPrivateKeyContent(text: string): boolean {
+	return PRIVATE_KEY_CONTENT.some((re) => re.test(text));
+}
+
 /**
  * PEM content that holds certificates and nothing secret. Public roots ship in
  * plenty of repositories and are not a finding.
  */
 function isCertificateOnly(text: string): boolean {
-	if (PRIVATE_KEY_CONTENT.some((re) => re.test(text))) return false;
+	if (hasPrivateKeyContent(text)) return false;
 	return /-----BEGIN (?:TRUSTED )?CERTIFICATE(?: REQUEST)?-----/.test(text);
 }
 
@@ -218,10 +233,12 @@ function hasGeneratedBanner(text: string): boolean {
 export function hasCredentialContent(text: string): boolean {
 	if (CREDENTIAL_CONTENT.some((re) => re.test(text))) return true;
 
-	const match = GENERIC_SECRET.exec(text);
-	if (!match) return false;
-	const value = match[1];
-	return value !== undefined && looksLikeLiveSecret(value);
+	const matches = text.matchAll(new RegExp(GENERIC_SECRET.source, "gi"));
+	for (const match of matches) {
+		const value = match[1];
+		if (value !== undefined && looksLikeLiveSecret(value)) return true;
+	}
+	return false;
 }
 
 /**

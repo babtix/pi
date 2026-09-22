@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { type ScanResult, scan } from "../src/index.ts";
+import { IgnoreStack, type ScanResult, scan } from "../src/index.ts";
 
 const roots: string[] = [];
 
@@ -50,6 +50,18 @@ describe("traversal", () => {
 		const [a, b] = (await scan(root)).files;
 		expect(a?.hash).toBe(b?.hash);
 	});
+
+	it.runIf(process.platform !== "win32")(
+		"scans case-variant sibling directories on case-sensitive platforms",
+		async () => {
+			const root = await repo({
+				"Component/a.ts": "1\n",
+				"component/b.ts": "2\n",
+			});
+			const result = await scan(root);
+			expect(paths(result)).toEqual(["Component/a.ts", "component/b.ts"]);
+		},
+	);
 });
 
 describe("ignore rules", () => {
@@ -92,6 +104,45 @@ describe("ignore rules", () => {
 		expect(paths(await scan(root))).toEqual([".gitignore", "keep.log"]);
 	});
 
+	it("honours child .gitignore negation overriding parent ignore", async () => {
+		const root = await repo({
+			".gitignore": "*.log\n",
+			"src/.gitignore": "!important.log\n",
+			"drop.log": "x\n",
+			"src/drop.log": "x\n",
+			"src/important.log": "keep\n",
+		});
+		expect(paths(await scan(root))).toEqual([".gitignore", "src/.gitignore", "src/important.log"]);
+	});
+
+	it("does not re-include a negated file if parent directory is excluded", async () => {
+		const root = await repo({
+			".gitignore": "excluded/\n!excluded/file.txt\n",
+			"excluded/file.txt": "secret\n",
+			"a.ts": "export const a = 1;\n",
+		});
+		expect(paths(await scan(root))).toEqual([".gitignore", "a.ts"]);
+	});
+
+	it("does not re-include a negated file via nested .gitignore if parent directory is excluded", async () => {
+		const root = await repo({
+			".gitignore": "excluded/\n",
+			"excluded/.gitignore": "!file.txt\n",
+			"excluded/file.txt": "secret\n",
+			"a.ts": "export const a = 1;\n",
+		});
+		expect(paths(await scan(root))).toEqual([".gitignore", "a.ts"]);
+	});
+
+	it("re-includes a file when parent directory itself is not excluded", async () => {
+		const root = await repo({
+			".gitignore": "dir/*\n!dir/keep.txt\n",
+			"dir/drop.txt": "1\n",
+			"dir/keep.txt": "2\n",
+		});
+		expect(paths(await scan(root))).toEqual([".gitignore", "dir/keep.txt"]);
+	});
+
 	it("honours .kaiokenignore alongside .gitignore", async () => {
 		const root = await repo({
 			".kaiokenignore": "notes/\n",
@@ -116,7 +167,7 @@ describe("ignore rules", () => {
 	});
 });
 
-describe("binary handling", () => {
+describe("binary handling and large files", () => {
 	it("marks a file containing a null byte as binary and skips text rules", async () => {
 		const root = await mkdtemp(join(tmpdir(), "kaioken-scan-"));
 		roots.push(root);
@@ -136,5 +187,70 @@ describe("binary handling", () => {
 		const text = result.files.find((f) => f.path === "big.txt");
 		expect(big?.risk).toContain("large_binary");
 		expect(text?.risk).not.toContain("large_binary");
+	});
+
+	it("flags secrets past the 64KB mark in large files", async () => {
+		const root = await mkdtemp(join(tmpdir(), "kaioken-scan-"));
+		roots.push(root);
+		const padding = "x".repeat(70 * 1024);
+		const secret = 'const key = "AKIAIOSFODNN7EXAMPLE";\n';
+		await writeFile(join(root, "big.txt"), `${padding}\n${secret}`);
+		const result = await scan(root, { maxReadBytes: 64 * 1024 });
+		const big = result.files.find((f) => f.path === "big.txt");
+		expect(big?.risk).toContain("credentials");
+	});
+
+	it("flags private keys past the 64KB mark in large files", async () => {
+		const root = await mkdtemp(join(tmpdir(), "kaioken-scan-"));
+		roots.push(root);
+		const padding = "x".repeat(80 * 1024);
+		const key = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----\n";
+		await writeFile(join(root, "big_key.txt"), `${padding}\n${key}`);
+		const result = await scan(root, { maxReadBytes: 64 * 1024 });
+		const big = result.files.find((f) => f.path === "big_key.txt");
+		expect(big?.risk).toContain("private_key");
+	});
+
+	it("respects maxSecretScanBytes limit on huge files", async () => {
+		const root = await mkdtemp(join(tmpdir(), "kaioken-scan-"));
+		roots.push(root);
+		const padding = "x".repeat(100 * 1024);
+		const secret = 'const key = "AKIAIOSFODNN7EXAMPLE";\n';
+		await writeFile(join(root, "huge.txt"), `${padding}\n${secret}`);
+		const result = await scan(root, { maxReadBytes: 32 * 1024, maxSecretScanBytes: 50 * 1024 });
+		const huge = result.files.find((f) => f.path === "huge.txt");
+		expect(huge?.risk).not.toContain("credentials");
+	});
+});
+
+describe("case sensitivity", () => {
+	it("matches patterns case-sensitively when ignoreCase is false", async () => {
+		const root = await repo({
+			".gitignore": "*.log\n",
+			"test.LOG": "2\n",
+			"other.txt": "3\n",
+		});
+		const result = await scan(root, { ignoreCase: false });
+		expect(paths(result)).toEqual([".gitignore", "other.txt", "test.LOG"]);
+	});
+
+	it("matches patterns case-insensitively when ignoreCase is true", async () => {
+		const root = await repo({
+			".gitignore": "*.log\n",
+			"test.LOG": "2\n",
+			"other.txt": "3\n",
+		});
+		const result = await scan(root, { ignoreCase: true });
+		expect(paths(result)).toEqual([".gitignore", "other.txt"]);
+	});
+
+	it("evaluates IgnoreStack case sensitivity option directly", () => {
+		const caseSensitive = IgnoreStack.fromPatterns(["*.log"], { ignoreCase: false });
+		expect(caseSensitive.ignores("file.log")).toBe(true);
+		expect(caseSensitive.ignores("file.LOG")).toBe(false);
+
+		const caseInsensitive = IgnoreStack.fromPatterns(["*.log"], { ignoreCase: true });
+		expect(caseInsensitive.ignores("file.log")).toBe(true);
+		expect(caseInsensitive.ignores("file.LOG")).toBe(true);
 	});
 });
