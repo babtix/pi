@@ -1,6 +1,6 @@
 import type { Node, Query } from "web-tree-sitter";
-import { loadGrammar, newParser } from "./grammars.ts";
-import type { FileMap, SymbolKind, SymbolRecord } from "./types.ts";
+import { loadGrammar, withParser } from "./grammars.ts";
+import type { FileMap, ReExportRecord, SymbolKind, SymbolRecord } from "./types.ts";
 
 const KINDS = new Set<SymbolKind>([
 	"function",
@@ -47,27 +47,28 @@ export async function extractFile(input: ExtractInput): Promise<FileMap> {
 	const grammar = await loadGrammar(input.language);
 
 	if (!grammar) {
+		const fallback = extractFallbackDeclarations(input);
 		return {
 			path: input.path,
 			language: input.language,
 			hash: input.hash,
 			lineCount,
 			unparsed: true,
-			symbols: [],
+			symbols: fallback.symbols,
+			reexports: fallback.reexports,
 		};
 	}
 
-	const parser = await newParser(grammar.language);
 	let symbols: SymbolRecord[] = [];
-	try {
+	let reexports: ReExportRecord[] = [];
+	await withParser(input.language, grammar.language, (parser) => {
 		const tree = parser.parse(input.source);
 		if (tree) {
 			symbols = collect(tree.rootNode, grammar.query, input);
+			reexports = collectReExports(tree.rootNode, input.language);
 			tree.delete();
 		}
-	} finally {
-		parser.delete();
-	}
+	});
 
 	return {
 		path: input.path,
@@ -76,6 +77,7 @@ export async function extractFile(input: ExtractInput): Promise<FileMap> {
 		lineCount,
 		unparsed: false,
 		symbols,
+		reexports,
 	};
 }
 
@@ -401,3 +403,92 @@ function countLines(source: string): number {
 	// A trailing newline does not start a new line.
 	return source.endsWith("\n") ? count - 1 : count;
 }
+
+export function collectReExports(root: Node, language: string): ReExportRecord[] {
+	const reexports: ReExportRecord[] = [];
+
+	switch (language) {
+		case "typescript":
+		case "tsx":
+		case "javascript":
+		case "jsx": {
+			for (let i = 0; i < root.namedChildCount; i++) {
+				const child = root.namedChild(i);
+				if (!child || child.type !== "export_statement") continue;
+
+				const sourceNode = child.childForFieldName("source");
+				if (!sourceNode) continue;
+				const from = sourceNode.text.replace(/^['"`]|['"`]$/g, "");
+
+				let hasClauseOrNamespace = false;
+				for (let j = 0; j < child.namedChildCount; j++) {
+					const sub = child.namedChild(j);
+					if (!sub) continue;
+
+					if (sub.type === "namespace_export") {
+						hasClauseOrNamespace = true;
+						const idNode = sub.namedChild(0);
+						const name = idNode ? idNode.text : sub.text.replace(/^\*\s*as\s+/, "");
+						reexports.push({ name, importedName: "*", from });
+					} else if (sub.type === "export_clause") {
+						hasClauseOrNamespace = true;
+						for (let k = 0; k < sub.namedChildCount; k++) {
+							const spec = sub.namedChild(k);
+							if (!spec) continue;
+							const nameNode = spec.childForFieldName("name");
+							const aliasNode = spec.childForFieldName("alias");
+							if (nameNode) {
+								if (aliasNode) {
+									reexports.push({ name: aliasNode.text, importedName: nameNode.text, from });
+								} else {
+									reexports.push({ name: nameNode.text, importedName: nameNode.text, from });
+								}
+							}
+						}
+					}
+				}
+
+				if (!hasClauseOrNamespace) {
+					reexports.push({ name: "*", from });
+				}
+			}
+			break;
+		}
+		case "python": {
+			for (let i = 0; i < root.namedChildCount; i++) {
+				const child = root.namedChild(i);
+				if (!child || child.type !== "import_from_statement") continue;
+				const moduleNode = child.childForFieldName("module_name");
+				if (!moduleNode) continue;
+				const from = moduleNode.text;
+
+				for (let j = 0; j < child.namedChildCount; j++) {
+					const sub = child.namedChild(j);
+					if (!sub || sub === moduleNode) continue;
+					if (sub.type === "wildcard_import") {
+						reexports.push({ name: "*", from });
+					} else if (sub.type === "aliased_import") {
+						const nameNode = sub.childForFieldName("name");
+						const aliasNode = sub.childForFieldName("alias");
+						if (nameNode && aliasNode) {
+							reexports.push({ name: aliasNode.text, importedName: nameNode.text, from });
+						}
+					} else if (sub.type === "dotted_name" || sub.type === "identifier") {
+						reexports.push({ name: sub.text, importedName: sub.text, from });
+					}
+				}
+			}
+			break;
+		}
+	}
+
+	return reexports;
+}
+
+export function extractFallbackDeclarations(_input: ExtractInput): {
+	symbols: SymbolRecord[];
+	reexports: ReExportRecord[];
+} {
+	return { symbols: [], reexports: [] };
+}
+

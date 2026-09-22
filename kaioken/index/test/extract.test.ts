@@ -2,7 +2,12 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { extractFile, type SymbolRecord } from "../src/index.ts";
+import {
+	extractFile,
+	getParserPool,
+	loadGrammar,
+	type SymbolRecord,
+} from "../src/index.ts";
 
 /**
  * The fixture suite. Declaration counts and line ranges are asserted exactly,
@@ -251,3 +256,68 @@ describe("unbound languages", () => {
 		expect(file.lineCount).toBe(2);
 	});
 });
+
+describe("parser pool", () => {
+	it("reuses parser instances across multiple files of the same language", async () => {
+		const grammar = await loadGrammar("typescript");
+		expect(grammar).not.toBeNull();
+		const pool = getParserPool("typescript", grammar!.language, 2);
+
+		const parser1 = await pool.acquire();
+		expect(parser1).toBeDefined();
+		expect(pool.inUseCount).toBe(1);
+
+		pool.release(parser1);
+		expect(pool.inUseCount).toBe(0);
+		expect(pool.availableCount).toBe(1);
+
+		const parser2 = await pool.acquire();
+		// Must be the identical reused parser instance
+		expect(parser2).toBe(parser1);
+		pool.release(parser2);
+	});
+
+	it("extracts multiple files of the same language using pooled parsers", async () => {
+		const file1 = await extractFile({
+			path: "one.ts",
+			language: "typescript",
+			hash: "h1",
+			source: "export const x = 1;\n",
+		});
+		const file2 = await extractFile({
+			path: "two.ts",
+			language: "typescript",
+			hash: "h2",
+			source: "export const y = 2;\n",
+		});
+		expect(file1.symbols[0]?.name).toBe("x");
+		expect(file2.symbols[0]?.name).toBe("y");
+	});
+});
+
+describe("re-export extraction", () => {
+	it("captures named and wildcard re-exports from TypeScript", async () => {
+		const source = [
+			'export { bar as foo, baz } from "./bar";',
+			'export * from "./mod";',
+			'export * as utils from "./utils";',
+			"export const local = 42;",
+		].join("\n");
+
+		const file = await extractFile({
+			path: "index.ts",
+			language: "typescript",
+			hash: "h",
+			source,
+		});
+
+		expect(file.reexports).toEqual([
+			{ name: "foo", importedName: "bar", from: "./bar" },
+			{ name: "baz", importedName: "baz", from: "./bar" },
+			{ name: "*", from: "./mod" },
+			{ name: "utils", importedName: "*", from: "./utils" },
+		]);
+		expect(file.symbols.map((s) => s.name)).toEqual(["local"]);
+	});
+});
+

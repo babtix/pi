@@ -28,9 +28,48 @@ export class SymbolOracle {
 				else this.byName.set(symbol.name, [location]);
 			}
 		}
+
+		// Register re-exported names so has(name) and lookup(name) connect re-exports
+		for (const file of index.files) {
+			if (!file.reexports) continue;
+			for (const re of file.reexports) {
+				if (re.name === "*") {
+					const targetPath = this.resolvePath(file.path, re.from);
+					const targetFile = targetPath ? this.byPath.get(targetPath) : null;
+					if (targetFile) {
+						for (const sym of targetFile.symbols) {
+							if (sym.exported) {
+								const list = this.byName.get(sym.name);
+								const location: SymbolLocation = { path: targetFile.path, symbol: sym };
+								if (list) {
+									if (!list.some((l) => l.path === location.path && l.symbol.name === sym.name)) {
+										list.push(location);
+									}
+								} else {
+									this.byName.set(sym.name, [location]);
+								}
+							}
+						}
+					}
+				} else {
+					const resolved = this.resolve(file.path, re.name);
+					if (resolved) {
+						const list = this.byName.get(re.name);
+						const location: SymbolLocation = { path: resolved.path, symbol: resolved.symbol };
+						if (list) {
+							if (!list.some((l) => l.path === location.path && l.symbol.name === resolved.symbol.name)) {
+								list.push(location);
+							}
+						} else {
+							this.byName.set(re.name, [location]);
+						}
+					}
+				}
+			}
+		}
 	}
 
-	/** Definitive: the repository either declares this name or it does not. */
+	/** Definitive: the repository either declares or re-exports this name or it does not. */
 	has(name: string): boolean {
 		return this.byName.has(name);
 	}
@@ -40,11 +79,87 @@ export class SymbolOracle {
 		return this.byName.get(name) ?? [];
 	}
 
-	/** Scoped lookup, for a claim that names both a symbol and its file. */
+	/** Scoped lookup, resolving local declarations or re-exports. */
 	lookupIn(path: string, name: string): SymbolRecord | null {
+		const loc = this.resolve(path, name);
+		return loc ? loc.symbol : null;
+	}
+
+	/** Resolve a symbol name from a given file to its originating declaration location. */
+	resolve(path: string, name: string): SymbolLocation | null {
+		return this.resolveInternal(path, name, new Set<string>());
+	}
+
+	private resolveInternal(path: string, name: string, visited: Set<string>): SymbolLocation | null {
+		const key = `${path}:${name}`;
+		if (visited.has(key)) return null;
+		visited.add(key);
+
 		const file = this.byPath.get(path);
 		if (!file) return null;
-		return file.symbols.find((s) => s.name === name) ?? null;
+
+		// 1. Direct declaration
+		const direct = file.symbols.find((s) => s.name === name);
+		if (direct) {
+			return { path: file.path, symbol: direct };
+		}
+
+		if (!file.reexports || file.reexports.length === 0) return null;
+
+		// 2. Named re-export
+		for (const re of file.reexports) {
+			if (re.name === name) {
+				const targetPath = this.resolvePath(path, re.from);
+				if (!targetPath) continue;
+				const targetName = re.importedName ?? re.name;
+				const resolved = this.resolveInternal(targetPath, targetName, visited);
+				if (resolved) return resolved;
+			}
+		}
+
+		// 3. Wildcard re-export
+		for (const re of file.reexports) {
+			if (re.name === "*") {
+				const targetPath = this.resolvePath(path, re.from);
+				if (!targetPath) continue;
+				const resolved = this.resolveInternal(targetPath, name, visited);
+				if (resolved) return resolved;
+			}
+		}
+
+		return null;
+	}
+
+	private resolvePath(fromPath: string, specifier: string): string | null {
+		if (this.byPath.has(specifier)) return specifier;
+		const dir = fromPath.includes("/") ? fromPath.slice(0, fromPath.lastIndexOf("/")) : "";
+		const raw = dir ? `${dir}/${specifier}` : specifier;
+		const parts: string[] = [];
+		for (const seg of raw.split("/")) {
+			if (seg === "" || seg === ".") continue;
+			if (seg === "..") parts.pop();
+			else parts.push(seg);
+		}
+		const base = parts.join("/");
+		const candidates = [
+			base,
+			`${base}.ts`,
+			`${base}.tsx`,
+			`${base}.js`,
+			`${base}.jsx`,
+			`${base}.py`,
+			`${base}.go`,
+			`${base}.rs`,
+			`${base}/index.ts`,
+			`${base}/index.tsx`,
+			`${base}/index.js`,
+			`${base}/index.jsx`,
+			`${base}/__init__.py`,
+		];
+		for (const c of candidates) {
+			if (this.byPath.has(c)) return c;
+		}
+		return null;
 	}
 
 	hasFile(path: string): boolean {
@@ -74,10 +189,38 @@ export class SymbolOracle {
 	 */
 	exported(path?: string): SymbolLocation[] {
 		const out: SymbolLocation[] = [];
-		const files = path ? [this.byPath.get(path)].filter(Boolean) : [...this.byPath.values()];
-		for (const file of files as FileMap[]) {
+		const files = path
+			? [this.byPath.get(path)].filter((f): f is FileMap => f !== undefined)
+			: [...this.byPath.values()];
+		for (const file of files) {
 			for (const symbol of file.symbols) {
 				if (symbol.exported) out.push({ path: file.path, symbol });
+			}
+			if (file.reexports) {
+				for (const re of file.reexports) {
+					if (re.name === "*") {
+						const targetPath = this.resolvePath(file.path, re.from);
+						const targetFile = targetPath ? this.byPath.get(targetPath) : null;
+						if (targetFile) {
+							for (const sym of targetFile.symbols) {
+								if (
+									sym.exported &&
+									!out.some((o) => o.path === targetFile.path && o.symbol.name === sym.name)
+								) {
+									out.push({ path: targetFile.path, symbol: sym });
+								}
+							}
+						}
+					} else {
+						const resolved = this.resolve(file.path, re.name);
+						if (
+							resolved &&
+							!out.some((o) => o.path === resolved.path && o.symbol.name === resolved.symbol.name)
+						) {
+							out.push(resolved);
+						}
+					}
+				}
 			}
 		}
 		return out;

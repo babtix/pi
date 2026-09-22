@@ -34,6 +34,16 @@ export interface SymbolRecord {
 	parent?: string;
 }
 
+/** A captured re-export or alias statement. */
+export interface ReExportRecord {
+	/** The name exposed by this file, or "*" for wildcard export. */
+	name: string;
+	/** The name in the source file, or undefined if unaliased or wildcard. */
+	importedName?: string;
+	/** The relative module specifier, e.g. "./bar". */
+	from: string;
+}
+
 /** The declaration inventory for one file. */
 export interface FileMap {
 	path: string;
@@ -41,9 +51,11 @@ export interface FileMap {
 	/** Content hash from the scan. An unchanged hash means no reparse. */
 	hash: string;
 	lineCount: number;
-	/** True when the language has no grammar bound; symbols will be empty. */
+	/** True when the language has no grammar bound. */
 	unparsed: boolean;
 	symbols: SymbolRecord[];
+	/** Re-exported declarations captured from this file. */
+	reexports?: ReExportRecord[];
 }
 
 export interface IndexResult {

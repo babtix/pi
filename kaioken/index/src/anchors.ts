@@ -29,6 +29,13 @@ export interface AnchorResolution {
 	matchCount?: number;
 }
 
+export interface ResolveExcerptOptions {
+	/** If the excerpt is ambiguous across the file, restrict search to this symbol's AST node boundaries. */
+	contextSymbol?: string;
+	/** Expected line number hint for disambiguating duplicate occurrences. */
+	expectedLine?: number;
+}
+
 /**
  * Locate an excerpt in a file's source. `source` is the current content of
  * `file.path` — the caller supplies it so this stays a pure function and the
@@ -38,6 +45,7 @@ export function resolveExcerpt(
 	file: FileMap | null,
 	source: string,
 	excerpt: string,
+	options?: ResolveExcerptOptions,
 ): AnchorResolution {
 	if (!file) return { resolved: false, reason: "file_not_indexed" };
 
@@ -47,7 +55,7 @@ export function resolveExcerpt(
 	const hayLines = source.split(/\r?\n/);
 	const normalisedHay = hayLines.map(normaliseLine);
 
-	const matches: number[] = [];
+	let matches: number[] = [];
 	for (let start = 0; start + needleLines.length <= normalisedHay.length; start++) {
 		let ok = true;
 		for (let offset = 0; offset < needleLines.length; offset++) {
@@ -60,6 +68,36 @@ export function resolveExcerpt(
 	}
 
 	if (matches.length === 0) return { resolved: false, reason: "excerpt_not_found" };
+
+	// Disambiguate multi-occurrence matches using surrounding AST node boundaries
+	if (matches.length > 1 && options?.contextSymbol) {
+		const scoped = matches.filter((startIdx) => {
+			const start = startIdx + 1;
+			const end = start + needleLines.length - 1;
+			const sym = enclosingSymbol(file, start, end);
+			return sym?.name === options.contextSymbol;
+		});
+		if (scoped.length > 0) {
+			matches = scoped;
+		}
+	}
+
+	if (matches.length > 1 && options?.expectedLine !== undefined) {
+		const targetLine = options.expectedLine;
+		matches.sort((a, b) => {
+			const diffA = Math.abs(a + 1 - targetLine);
+			const diffB = Math.abs(b + 1 - targetLine);
+			return diffA - diffB;
+		});
+		const closest = matches[0]!;
+		const second = matches[1];
+		const diffClosest = Math.abs(closest + 1 - targetLine);
+		const diffSecond = second !== undefined ? Math.abs(second + 1 - targetLine) : Infinity;
+		if (diffClosest < diffSecond) {
+			matches = [closest];
+		}
+	}
+
 	if (matches.length > 1) {
 		return { resolved: false, reason: "excerpt_ambiguous", matchCount: matches.length };
 	}
