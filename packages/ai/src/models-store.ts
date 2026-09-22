@@ -1,7 +1,10 @@
-import type { Api, Model } from "./types.ts";
+import type { Api, ClassifierApi, ClassifierModel, ImageApi, ImageModel, Model } from "./types.ts";
 
 export interface ModelsStoreEntry {
+	/** Chat models. Readers that predate other model types only read this list. */
 	models: readonly Model<Api>[];
+	/** Models of every other type. Omitted by chat-only and older store entries. */
+	otherModels?: readonly (ImageModel<ImageApi> | ClassifierModel<ClassifierApi>)[];
 	/** Unix timestamp from the remote catalog's Last-Modified header. */
 	lastModified?: number;
 	/** Unix timestamp of the last completed remote check. */
