@@ -16,6 +16,9 @@ import { runEval, formatReport } from "./dist/index.js";
 const multiplierArg = process.argv.find((a) => /^--x?\d+$/.test(a));
 const multiplier = multiplierArg ? Number.parseInt(multiplierArg.replace(/^--x?/, ""), 10) : 3;
 
-const report = await runEval({ multiplier });
+const repoIndex = process.argv.indexOf("--repo");
+const repo = repoIndex !== -1 ? process.argv[repoIndex + 1] : undefined;
+
+const report = await runEval({ multiplier, ...(repo ? { repo } : {}) });
 console.log(formatReport(report));
 process.exit(report.passed ? 0 : 1);

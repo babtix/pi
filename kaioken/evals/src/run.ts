@@ -7,8 +7,11 @@
  * silently dropped them would score zero and deserve to, because the claim is
  * that they are reported rather than hidden.
  */
-import { SymbolOracle } from "@kaioken/index";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { buildIndex, SymbolOracle } from "@kaioken/index";
 import { estimateSpend, estimateTokens } from "@kaioken/modelport";
+import { scan } from "@kaioken/scan";
 import type { ModelCost } from "@earendil-works/pi-ai";
 import { createFixture, readerFor, type Fixture } from "./fixture.ts";
 import { runProbes } from "./probes.ts";
@@ -21,6 +24,8 @@ export interface RunOptions {
 	multiplier?: number;
 	/** Keep the fixture on disk after the run, for inspection. */
 	keepFixture?: boolean;
+	/** Arbitrary repository path on disk to run evaluation against. */
+	repo?: string;
 }
 
 /**
@@ -33,7 +38,7 @@ async function countHallucinations(fixture: Fixture, body: string): Promise<numb
 	const report = await verifyDocument({
 		body,
 		oracle: new SymbolOracle(fixture.index),
-		scope: [...fixture.knownFiles].filter((p) => p.endsWith(".ts")),
+		scope: [...fixture.knownFiles],
 		readSource: readerFor(fixture),
 		knownFiles: fixture.knownFiles,
 	});
@@ -42,7 +47,32 @@ async function countHallucinations(fixture: Fixture, body: string): Promise<numb
 
 export async function runEval(options: RunOptions = {}): Promise<EvalReport> {
 	const multiplier = options.multiplier ?? 3;
-	const fixture = await createFixture();
+	let fixture: Fixture;
+	if (options.repo) {
+		const root = options.repo;
+		const scanResult = await scan(root);
+		const outcome = await buildIndex(scanResult);
+		const sources: Record<string, string> = {};
+		for (const file of scanResult.files) {
+			if (!file.binary && file.size < 512 * 1024) {
+				try {
+					sources[file.path] = await readFile(join(root, file.path), "utf8");
+				} catch {
+					// optional
+				}
+			}
+		}
+		fixture = {
+			root,
+			scan: scanResult,
+			index: outcome.index,
+			sources,
+			knownFiles: new Set(scanResult.files.filter((f) => !f.binary).map((f) => f.path)),
+			dispose: async () => {},
+		};
+	} else {
+		fixture = await createFixture();
+	}
 
 	try {
 		const probes = await runProbes({
@@ -57,18 +87,38 @@ export async function runEval(options: RunOptions = {}): Promise<EvalReport> {
 		// hallucinations; a document that invents things must produce some.
 		// Both directions are measured, because a counter that always returns
 		// zero would pass the first and fail to notice the second.
-		const honest = [
+		let honest = [
 			"# Retrieval",
 			"",
 			"The `alphaSearch` function walks the index and returns ranked hits.",
 			"See `src/a.ts` and `src/b.ts`.",
 		].join("\n");
 
+		if (options.repo && !fixture.knownFiles.has("src/a.ts")) {
+			const realFile = fixture.index.files.find((f) => f.symbols.length > 0) ?? fixture.index.files[0];
+			const realSymbol = realFile?.symbols[0]?.name ?? "";
+			if (realFile && realSymbol) {
+				honest = [
+					"# Retrieval",
+					"",
+					`The \`${realSymbol}\` declaration is defined in \`${realFile.path}\`.`,
+				].join("\n");
+			} else if (realFile) {
+				honest = [
+					"# Retrieval",
+					"",
+					`See \`${realFile.path}\`.`,
+				].join("\n");
+			}
+		}
+
+		const fakeSym = `authMagicLogin_${Date.now()}`;
+		const fakeFile = `src/does_not_exist_${Date.now()}.ts`;
 		const invented = [
 			"# Retrieval",
 			"",
-			"The `authMagicLogin` function delegates to `phantomIndex`.",
-			"Configuration lives in `src/does-not-exist.ts`.",
+			`The \`${fakeSym}\` function delegates to \`phantomIndex_${Date.now()}\`.`,
+			`Configuration lives in \`${fakeFile}\`.`,
 		].join("\n");
 
 		const honestHallucinations = await countHallucinations(fixture, honest);

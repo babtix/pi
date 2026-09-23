@@ -7,6 +7,10 @@ export {
 	probe4ImpactFromIndex,
 	probe5VerifierCatchesInvention,
 	probe6CardRecordsUngrounded,
+	probe7DriftDetection,
+	probe8ImpactRenameAccuracy,
+	probe9PaddingRejection,
+	probe10MultiLanguageGrounding,
 	runProbes,
 	scriptedClient,
 } from "./probes.ts";

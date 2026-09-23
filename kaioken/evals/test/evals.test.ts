@@ -7,6 +7,10 @@ import {
 	probe4ImpactFromIndex,
 	probe5VerifierCatchesInvention,
 	probe6CardRecordsUngrounded,
+	probe7DriftDetection,
+	probe8ImpactRenameAccuracy,
+	probe9PaddingRejection,
+	probe10MultiLanguageGrounding,
 	runProbes,
 } from "../src/probes.ts";
 import { evaluate, formatReport, type EvalMetrics } from "../src/types.ts";
@@ -107,11 +111,47 @@ describe("evals: probes pass on a correct pipeline", () => {
 		}
 	});
 
+	it("probe 7: drift detection passes on unmodified fixture", async () => {
+		const fixture = await createFixture();
+		try {
+			expect(probe7DriftDetection(fixture).passed).toBe(true);
+		} finally {
+			await fixture.dispose();
+		}
+	});
+
+	it("probe 8: impact prediction accurately tracks renamed symbols", async () => {
+		const fixture = await createFixture();
+		try {
+			expect((await probe8ImpactRenameAccuracy(fixture)).passed).toBe(true);
+		} finally {
+			await fixture.dispose();
+		}
+	});
+
+	it("probe 9: padding and generic boilerplate are rejected", async () => {
+		const fixture = await createFixture();
+		try {
+			expect((await probe9PaddingRejection(fixture)).passed).toBe(true);
+		} finally {
+			await fixture.dispose();
+		}
+	});
+
+	it("probe 10: multi-language AST symbols (Python, Go, Rust, TS) ground cleanly", async () => {
+		const fixture = await createFixture();
+		try {
+			expect((await probe10MultiLanguageGrounding(fixture)).passed).toBe(true);
+		} finally {
+			await fixture.dispose();
+		}
+	});
+
 	it("runs every probe against one fixture", async () => {
 		const fixture = await createFixture();
 		try {
 			const outcomes = await runProbes(fixture);
-			expect(outcomes.length).toBeGreaterThanOrEqual(6);
+			expect(outcomes.length).toBeGreaterThanOrEqual(10);
 			for (const outcome of outcomes) {
 				expect(outcome.passed, `${outcome.id}: ${outcome.detail ?? ""}`).toBe(true);
 			}
@@ -278,5 +318,16 @@ describe("evals: the full run", () => {
 		const low = await runEval({ multiplier: 1 });
 		const high = await runEval({ multiplier: 10 });
 		expect(high.metrics.estimatedTokens).toBeGreaterThan(low.metrics.estimatedTokens);
+	});
+
+	it("evaluates a repository path on disk using repo option", async () => {
+		const fixture = await createFixture();
+		try {
+			const report = await runEval({ multiplier: 1, repo: fixture.root });
+			expect(report.passed).toBe(true);
+			expect(report.metrics.hallucinatedSymbols).toBe(0);
+		} finally {
+			await fixture.dispose();
+		}
 	});
 });
