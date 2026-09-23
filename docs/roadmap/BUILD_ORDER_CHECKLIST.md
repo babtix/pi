@@ -6,7 +6,8 @@
 ---
 
 ### Step 1: Category 12 — VerifyCore, Grounding & Anti-Hallucination Shield
-*Rank: #1 Critical Foundation | Package: `kaioken/verifycore` | Features: `#UX-1101` – `#UX-1200`*
+*Rank: #1 Critical Foundation | Package: `kaioken/verifycore` | Features: `#UX-1101` – `#UX-1200`*  
+📄 **Plan Reference**: [`12-verifycore-grounding-anti-hallucination-shield.md`](categories/12-verifycore-grounding-anti-hallucination-shield.md)
 - [ ] **1.1** Implement O(1) pre-indexed basename lookup map for sub-millisecond file path resolution (`UX-1101`–`UX-1105`)
 - [ ] **1.2** Build quote anchor fuzzy matcher with AST scope boundary verification (`UX-1111`–`UX-1115`)
 - [ ] **1.3** Implement defect scoring algorithm calculating grounding confidence percentage (`UX-1116`–`UX-1120`)
@@ -16,7 +17,8 @@
 ---
 
 ### Step 2: Category 09 — Provenance, Staleness & Truth Drift Detection
-*Rank: #2 High-ROI Truth Tracking | Package: `kaioken/provenance` | Features: `#UX-0801` – `#UX-0900`*
+*Rank: #2 High-ROI Truth Tracking | Package: `kaioken/provenance` | Features: `#UX-0801` – `#UX-0900`*  
+📄 **Plan Reference**: [`09-provenance-staleness-truth-drift-detection.md`](categories/09-provenance-staleness-truth-drift-detection.md)
 - [ ] **2.1** Implement instant zero-token staleness check under 50ms via SHA256 source hashing (`UX-0801`–`UX-0810`)
 - [ ] **2.2** Deploy fine-grained symbol-level provenance binding to prevent false-alarm invalidation (`UX-0811`–`UX-0820`)
 - [ ] **2.3** Build visual freshness percentage dial calculation (`UX-0821`–`UX-0830`)
@@ -26,7 +28,8 @@
 ---
 
 ### Step 3: Category 11 — Verification Gates, Native Test Runners & Diagnostics
-*Rank: #3 Developer Quality Enforcer | Package: `kaioken/verify` | Features: `#UX-1001` – `#UX-1100`*
+*Rank: #3 Developer Quality Enforcer | Package: `kaioken/verify` | Features: `#UX-1001` – `#UX-1100`*  
+📄 **Plan Reference**: [`11-verification-gates-native-test-runners-diagnostics.md`](categories/11-verification-gates-native-test-runners-diagnostics.md)
 - [ ] **3.1** Build multi-runtime auto-detection engine for test commands (Vitest, Pytest, Go, Cargo) (`UX-1001`–`UX-1010`)
 - [ ] **3.2** Implement streaming test execution console displaying live stdout/stderr chunks (`UX-1011`–`UX-1020`)
 - [ ] **3.3** Deploy structured failure extractor parsing test file, line number, and assertion diffs (`UX-1021`–`UX-1030`)
@@ -37,7 +40,8 @@
 ---
 
 ### Step 4: Category 10 — Impact Analysis & Blast Radius Prediction
-*Rank: #4 Cascading Breakage Prevention | Package: `kaioken/impact` | Features: `#UX-0901` – `#UX-1000`*
+*Rank: #4 Cascading Breakage Prevention | Package: `kaioken/impact` | Features: `#UX-0901` – `#UX-1000`*  
+📄 **Plan Reference**: [`10-impact-analysis-blast-radius-prediction.md`](categories/10-impact-analysis-blast-radius-prediction.md)
 - [ ] **4.1** Implement transitive dependent tree calculator with circular dependency cycle guards (`UX-0901`–`UX-0910`)
 - [ ] **4.2** Build visual blast radius risk score gauge (0–100) assessing edits to shared symbols (`UX-0911`–`UX-0920`)
 - [ ] **4.3** Deploy pre-commit impact check gate blocking unannounced public API breaking changes (`UX-0921`–`UX-0930`)
@@ -47,7 +51,8 @@
 ---
 
 ### Step 5: Category 07 — AST Symbol Indexing & Code Oracle
-*Rank: #5 Code Intelligence Core | Package: `kaioken/index` | Features: `#UX-0601` – `#UX-0700`*
+*Rank: #5 Code Intelligence Core | Package: `kaioken/index` | Features: `#UX-0601` – `#UX-0700`*  
+📄 **Plan Reference**: [`07-ast-symbol-indexing-code-oracle.md`](categories/07-ast-symbol-indexing-code-oracle.md)
 - [ ] **5.1** Implement incremental AST delta indexing updating only modified files (`UX-0601`–`UX-0610`)
 - [ ] **5.2** Build Tree-sitter WASM parser pool recycling to eliminate heap churn (`UX-0611`–`UX-0620`)
 - [ ] **5.3** Deploy multi-hop re-export chain resolution engine across TypeScript/JS/Python/Go (`UX-0621`–`UX-0630`)
@@ -56,7 +61,8 @@
 ---
 
 ### Step 6: Category 19 — GitOps, Worktree Delegation & Safe Merges
-*Rank: #6 Autonomous Agent Safety | Package: `kaioken/gitops` | Features: `#UX-1801` – `#UX-1900`*
+*Rank: #6 Autonomous Agent Safety | Package: `kaioken/gitops` | Features: `#UX-1801` – `#UX-1900`*  
+📄 **Plan Reference**: [`19-gitops-worktree-delegation-safe-merges.md`](categories/19-gitops-worktree-delegation-safe-merges.md)
 - [ ] **6.1** Build one-command isolated git worktree creator for scratch/agent task branches (`UX-1801`–`UX-1810`)
 - [ ] **6.2** Deploy fast-forward merge verification gate enforcing passing test runs before landing (`UX-1811`–`UX-1820`)
 - [ ] **6.3** Implement dirty working tree auto-stash guard preventing accidental file overwrites (`UX-1821`–`UX-1830`)
@@ -66,7 +72,8 @@
 ---
 
 ### Step 7: Category 08 — Search, Lexical Indexing & BM25 Retrieval
-*Rank: #7 Instant Code Discovery | Package: `kaioken/search` | Features: `#UX-0701` – `#UX-0800`*
+*Rank: #7 Instant Code Discovery | Package: `kaioken/search` | Features: `#UX-0701` – `#UX-0800`*  
+📄 **Plan Reference**: [`08-search-lexical-indexing-bm25-retrieval.md`](categories/08-search-lexical-indexing-bm25-retrieval.md)
 - [ ] **7.1** Implement instant search-as-you-type live query preview across code, docs, and cards (`UX-0701`–`UX-0710`)
 - [ ] **7.2** Optimize in-memory inverted postings lists with BM25 ranking algorithm (`UX-0711`–`UX-0720`)
 - [ ] **7.3** Add exact phrase quote matching and directory/file-path boosting (`UX-0721`–`UX-0730`)
@@ -75,7 +82,8 @@
 ---
 
 ### Step 8: Category 06 — Repo Scan, File Discovery & Risk Shield
-*Rank: #8 Security & Source Hygiene | Package: `kaioken/scan` | Features: `#UX-0501` – `#UX-0600`*
+*Rank: #8 Security & Source Hygiene | Package: `kaioken/scan` | Features: `#UX-0501` – `#UX-0600`*  
+📄 **Plan Reference**: [`06-repo-scan-file-discovery-risk-shield.md`](categories/06-repo-scan-file-discovery-risk-shield.md)
 - [ ] **8.1** Implement zero-allocation streaming fast-path file scanner (`UX-0501`–`UX-0510`)
 - [ ] **8.2** Build secret-scanning quarantine wizard (API keys, GitHub tokens, AWS certs) (`UX-0511`–`UX-0520`)
 - [ ] **8.3** Deploy high-entropy string detector with Shannon entropy visualization (`UX-0521`–`UX-0530`)
@@ -84,7 +92,8 @@
 ---
 
 ### Step 9: Category 05 — Spend Transparency, Token Budgeting & Cost Control
-*Rank: #9 Financial Governance | Package: `kaioken/modelport` | Features: `#UX-0401` – `#UX-0500`*
+*Rank: #9 Financial Governance | Package: `kaioken/modelport` | Features: `#UX-0401` – `#UX-0500`*  
+📄 **Plan Reference**: [`05-spend-transparency-token-budgeting-cost-control.md`](categories/05-spend-transparency-token-budgeting-cost-control.md)
 - [ ] **9.1** Implement pre-flight token estimation calculation before model dispatches (`UX-0401`–`UX-0410`)
 - [ ] **9.2** Deploy interactive spend multiplier dial (×1 to ×10) on confirmation prompt (`UX-0411`–`UX-0420`)
 - [ ] **9.3** Build transparent per-model pricing breakdown cards with prompt/completion rates (`UX-0421`–`UX-0430`)
@@ -94,7 +103,8 @@
 ---
 
 ### Step 10: Category 13 — Module Planning & Architecture Decomposition
-*Rank: #10 System Structure Planning | Package: `kaioken/plan` | Features: `#UX-1201` – `#UX-1300`*
+*Rank: #10 System Structure Planning | Package: `kaioken/plan` | Features: `#UX-1201` – `#UX-1300`*  
+📄 **Plan Reference**: [`13-module-planning-architecture-decomposition.md`](categories/13-module-planning-architecture-decomposition.md)
 - [ ] **10.1** Deploy deterministic heuristic directory clustering fallback (`UX-1201`–`UX-1210`)
 - [ ] **10.2** Implement self-repair JSON parser recovering from malformed replies (`UX-1211`–`UX-1220`)
 - [ ] **10.3** Build human-editable YAML module checkpoint validator (`UX-1221`–`UX-1230`)
@@ -104,7 +114,8 @@
 ---
 
 ### Step 11: Category 14 — Knowledge Cards & Atomic Fact Base
-*Rank: #11 Verified Fact Capture | Package: `kaioken/plan/src/cards.ts` | Features: `#UX-1301` – `#UX-1400`*
+*Rank: #11 Verified Fact Capture | Package: `kaioken/plan/src/cards.ts` | Features: `#UX-1301` – `#UX-1400`*  
+📄 **Plan Reference**: [`14-knowledge-cards-atomic-fact-base.md`](categories/14-knowledge-cards-atomic-fact-base.md)
 - [ ] **11.1** Generate structured atomic knowledge cards citing verified symbols and lines (`UX-1301`–`UX-1310`)
 - [ ] **11.2** Build incremental card updater regenerating only cards citing modified symbols (`UX-1311`–`UX-1320`)
 - [ ] **11.3** Add visual card verification status badges (Grounded / Defects) (`UX-1321`–`UX-1330`)
@@ -114,7 +125,8 @@
 ---
 
 ### Step 12: Category 15 — Wiki Cascade, Chapter Generation & Documentation Web
-*Rank: #12 Comprehensive Living Docs | Package: `kaioken/wiki` | Features: `#UX-1401` – `#UX-1500`*
+*Rank: #12 Comprehensive Living Docs | Package: `kaioken/wiki` | Features: `#UX-1401` – `#UX-1500`*  
+📄 **Plan Reference**: [`15-wiki-cascade-chapter-generation-documentation-web.md`](categories/15-wiki-cascade-chapter-generation-documentation-web.md)
 - [ ] **12.1** Build resumable cascade runner skipping already-verified chapters on retry (`UX-1401`–`UX-1410`)
 - [ ] **12.2** Implement real-time token streaming typewriter effect for chapter text (`UX-1411`–`UX-1420`)
 - [ ] **12.3** Deploy cross-chapter relative markdown link validator catching 404 dead links (`UX-1421`–`UX-1430`)
@@ -124,7 +136,8 @@
 ---
 
 ### Step 13: Category 18 — Agent Skills, Autonomous Procedures & SkillGen
-*Rank: #13 Agent Autonomy Procedures | Package: `kaioken/skills`, `skillgen` | Features: `#UX-1701` – `#UX-1800`*
+*Rank: #13 Agent Autonomy Procedures | Package: `kaioken/skills` / `skillgen` | Features: `#UX-1701` – `#UX-1800`*  
+📄 **Plan Reference**: [`18-agent-skills-autonomous-procedures-skillgen.md`](categories/18-agent-skills-autonomous-procedures-skillgen.md)
 - [ ] **13.1** Build automated skill discovery from `package.json` scripts and `Makefiles` (`UX-1701`–`UX-1710`)
 - [ ] **13.2** Implement YAML frontmatter schema validator for skill parameters and triggers (`UX-1711`–`UX-1720`)
 - [ ] **13.3** Deploy adversarial critique repair loop eliminating ungrounded skill steps (`UX-1721`–`UX-1730`)
@@ -134,7 +147,8 @@
 ---
 
 ### Step 14: Category 20 — Root CLI Parity, CI Automation & Evals Suite
-*Rank: #14 Headless Toolchain & CI | Package: `kaioken/bin.ts`, `evals` | Features: `#UX-1901` – `#UX-2000`*
+*Rank: #14 Headless Toolchain & CI | Package: `kaioken/bin.ts` / `evals` | Features: `#UX-1901` – `#UX-2000`*  
+📄 **Plan Reference**: [`20-root-cli-parity-ci-automation-evals-suite.md`](categories/20-root-cli-parity-ci-automation-evals-suite.md)
 - [ ] **14.1** Ensure full 16-subcommand CLI parity matching all Pi slash commands (`UX-1901`–`UX-1910`)
 - [ ] **14.2** Add shell auto-completion scripts for Bash, Zsh, and Fish (`UX-1911`–`UX-1920`)
 - [ ] **14.3** Deploy multi-language fixture probe suites (TS, Py, Go, Rust, Java) (`UX-1921`–`UX-1930`)
@@ -144,7 +158,8 @@
 ---
 
 ### Step 15: Category 17 — Grounded Web Research & Intelligence Gatherer
-*Rank: #15 External Context & Verification | Package: `kaioken/research` | Features: `#UX-1601` – `#UX-1700`*
+*Rank: #15 External Context & Verification | Package: `kaioken/research` | Features: `#UX-1601` – `#UX-1700`*  
+📄 **Plan Reference**: [`17-grounded-web-research-intelligence-gatherer.md`](categories/17-grounded-web-research-intelligence-gatherer.md)
 - [ ] **15.1** Deploy SSRF and DNS-rebinding guard blocking private IP connections (`UX-1601`–`UX-1610`)
 - [ ] **15.2** Build bounded-concurrency parallel HTTP page fetcher (`UX-1611`–`UX-1620`)
 - [ ] **15.3** Implement HTML-to-text sanitization parser stripping script payloads (`UX-1621`–`UX-1630`)
@@ -154,7 +169,8 @@
 ---
 
 ### Step 16: Category 16 — Serve Preview, Web UI & Interactive Knowledge Graph
-*Rank: #16 Web Visualization | Package: `kaioken/serve` | Features: `#UX-1501` – `#UX-1600`*
+*Rank: #16 Web Visualization | Package: `kaioken/serve` | Features: `#UX-1501` – `#UX-1600`*  
+📄 **Plan Reference**: [`16-serve-preview-web-ui-interactive-knowledge-graph.md`](categories/16-serve-preview-web-ui-interactive-knowledge-graph.md)
 - [ ] **16.1** Build offline localhost HTTP preview server bound to loopback only (`UX-1501`–`UX-1510`)
 - [ ] **16.2** Deploy Server-Sent Events (SSE) live-reload watcher on file modifications (`UX-1511`–`UX-1520`)
 - [ ] **16.3** Embed interactive 2D/3D force-directed Cytoscape dependency graph (`UX-1521`–`UX-1530`)
@@ -164,7 +180,8 @@
 ---
 
 ### Step 17: Category 02 — Chat Transcript & Interactive Output Stream
-*Rank: #17 Transcript Ergonomics | Package: `.pi/extensions/kaioken/commands` | Features: `#UX-0101` – `#UX-0200`*
+*Rank: #17 Transcript Ergonomics | Package: `.pi/extensions/kaioken/commands` | Features: `#UX-0101` – `#UX-0200`*  
+📄 **Plan Reference**: [`02-chat-transcript-interactive-output-stream.md`](categories/02-chat-transcript-interactive-output-stream.md)
 - [ ] **17.1** Implement in-place live-updating progress cards with sub-phase spinners (`UX-0101`–`UX-0110`)
 - [ ] **17.2** Build syntax-highlighted unified diff blocks with collapsible folds (`UX-0111`–`UX-0120`)
 - [ ] **17.3** Add one-click copy-to-clipboard code snippet action (`UX-0121`–`UX-0130`)
@@ -174,7 +191,8 @@
 ---
 
 ### Step 18: Category 01 — Terminal UI (TUI) & Visual Aesthetics
-*Rank: #18 Visual Presentation | Package: `.pi/extensions/kaioken/ui` | Features: `#UX-0001` – `#UX-0100`*
+*Rank: #18 Visual Presentation | Package: `.pi/extensions/kaioken/ui` | Features: `#UX-0001` – `#UX-0100`*  
+📄 **Plan Reference**: [`01-terminal-ui-tui-visual-aesthetics.md`](categories/01-terminal-ui-tui-visual-aesthetics.md)
 - [ ] **18.1** Deploy adaptive 24-bit TrueColor gradient header treatment (`UX-0001`–`UX-0010`)
 - [ ] **18.2** Build dynamic Unicode glyph fallback system for basic terminals (`UX-0011`–`UX-0020`)
 - [ ] **18.3** Implement anti-flicker double-buffering terminal render pass (`UX-0021`–`UX-0030`)
@@ -184,7 +202,8 @@
 ---
 
 ### Step 19: Category 03 — HUD, Status Bar & Dynamic Widgets
-*Rank: #19 Passive Telemetry Readouts | Package: `.pi/extensions/kaioken/ui/header.ts` | Features: `#UX-0201` – `#UX-0300`*
+*Rank: #19 Passive Telemetry Readouts | Package: `.pi/extensions/kaioken/ui/header.ts` | Features: `#UX-0201` – `#UX-0300`*  
+📄 **Plan Reference**: [`03-hud-status-bar-dynamic-widgets.md`](categories/03-hud-status-bar-dynamic-widgets.md)
 - [ ] **19.1** Build real-time telemetry sparkline for token spend velocity (`UX-0201`–`UX-0210`)
 - [ ] **19.2** Implement live repository freshness ratio badge (`UX-0211`–`UX-0220`)
 - [ ] **19.3** Deploy active git worktree dirty status indicator pill (`UX-0221`–`UX-0230`)
@@ -194,7 +213,8 @@
 ---
 
 ### Step 20: Category 04 — Keyboard Navigation, Shortcuts & Command Palette
-*Rank: #20 Keyboard Efficiency | Package: `packages/tui` | Features: `#UX-0301` – `#UX-0400`*
+*Rank: #20 Keyboard Efficiency | Package: `packages/tui` | Features: `#UX-0301` – `#UX-0400`*  
+📄 **Plan Reference**: [`04-keyboard-navigation-shortcuts-command-palette.md`](categories/04-keyboard-navigation-shortcuts-command-palette.md)
 - [ ] **20.1** Implement Vim-style navigation hotkeys (`j`/`k`, `g`/`G`) across lists (`UX-0301`–`UX-0310`)
 - [ ] **20.2** Build fuzzy search quick selector command palette (`UX-0311`–`UX-0320`)
 - [ ] **20.3** Add global hotkey shortcuts to toggle HUD and drawer panes (`UX-0321`–`UX-0330`)
