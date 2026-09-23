@@ -3,7 +3,7 @@ import { SymbolOracle, type IndexResult } from "@kaioken/index";
 import type { ModelClient, ModelRequest } from "@kaioken/modelport";
 import { extractClaims, findPadding } from "../src/claims.ts";
 import { coverageOf, groundingDefects, summariseDefects, verifyDocument } from "../src/verify.ts";
-import { documentPath, generateDocument } from "../src/generate.ts";
+import { buildPrompt, documentPath, generateDocument } from "../src/generate.ts";
 import { planSections, planWiki } from "../src/plan.ts";
 import {
 	normalisePlan,
@@ -34,7 +34,19 @@ function scriptedClient(replies: string[]): ModelClient & { requests: ModelReque
 }
 
 function indexOf(
-	files: Array<{ path: string; symbols?: Array<{ name: string; exported?: boolean; parent?: string; startLine?: number; endLine?: number }>; lineCount?: number }>,
+	files: Array<{
+		path: string;
+		symbols?: Array<{
+			name: string;
+			exported?: boolean;
+			parent?: string;
+			startLine?: number;
+			endLine?: number;
+			doc?: string;
+			signature?: string;
+		}>;
+		lineCount?: number;
+	}>,
 ): IndexResult {
 	return {
 		root: "/repo",
@@ -52,10 +64,10 @@ function indexOf(
 				kind: "function",
 				exported: s.exported ?? true,
 				parent: s.parent,
-				signature: `${s.name}(): void`,
+				signature: s.signature ?? `${s.name}(): void`,
 				startLine: s.startLine ?? 1,
 				endLine: s.endLine ?? 5,
-				doc: "",
+				doc: s.doc ?? "",
 			})),
 			imports: [],
 		})),
@@ -326,6 +338,48 @@ describe("wiki: verification", () => {
 		expect(summary.unknown_symbol).toBe(1);
 		expect(summary.unknown_file).toBe(1);
 	});
+
+	it("accepts a relative markdown link pointing to an existing or planned document", async () => {
+		const report = await verifyDocument({
+			body: "Refer to [Architecture](../architecture/index.md) and [Section](./overview.md).",
+			oracle,
+			scope: ["src/a.ts"],
+			readSource: noSource,
+			knownFiles,
+			currentDocument: "storage/index.md",
+			knownDocuments: new Set(["architecture/index.md", "storage/overview.md"]),
+		});
+		expect(report.defects.filter((d) => d.kind === "broken_link")).toHaveLength(0);
+	});
+
+	it("flags a broken relative link to a non-existent chapter as a defect", async () => {
+		const report = await verifyDocument({
+			body: "Refer to [Missing Chapter](../ghost/index.md) for details.",
+			oracle,
+			scope: ["src/a.ts"],
+			readSource: noSource,
+			knownFiles,
+			currentDocument: "storage/index.md",
+			knownDocuments: new Set(["architecture/index.md"]),
+		});
+		const linkDefect = report.defects.find((d) => d.kind === "broken_link");
+		expect(linkDefect).toBeDefined();
+		expect(linkDefect?.claim).toBe("../ghost/index.md");
+		expect(linkDefect?.detail).toContain("ghost/index.md");
+	});
+
+	it("ignores web URLs and anchor links during relative link check", async () => {
+		const report = await verifyDocument({
+			body: "See [GitHub](https://github.com/example/repo) and [Local](#section-anchor).",
+			oracle,
+			scope: ["src/a.ts"],
+			readSource: noSource,
+			knownFiles,
+			currentDocument: "storage/index.md",
+			knownDocuments: new Set(["architecture/index.md"]),
+		});
+		expect(report.defects.filter((d) => d.kind === "broken_link")).toHaveLength(0);
+	});
 });
 
 describe("wiki: coverage", () => {
@@ -464,6 +518,46 @@ describe("wiki: document generation", () => {
 	it("names the document path per section", () => {
 		expect(documentPath(chapter)).toBe("core/index.md");
 		expect(documentPath(chapter, { id: "s1", title: "t", summary: "s", files: [] })).toBe("core/s1.md");
+	});
+
+	it("rations evidence hierarchically: entry files have full signatures, non-entry files only exports", () => {
+		const entryFile = {
+			path: "src/index.ts",
+			symbols: [
+				{ name: "exportedEntry", exported: true, signature: "exportedEntry(): void", doc: "Entry documentation" },
+				{ name: "internalEntry", exported: false, signature: "internalEntry(): void" },
+			],
+		};
+		const otherFile = {
+			path: "src/util.ts",
+			symbols: [
+				{ name: "exportedOther", exported: true, signature: "exportedOther(): void", doc: "Other documentation" },
+				{ name: "internalOther", exported: false, signature: "internalOther(): void" },
+			],
+		};
+		const testIndex = indexOf([entryFile, otherFile]);
+		const prompt = buildPrompt(
+			{
+				plan: { version: 1, generatedAt: "", multiplier: 1, chapters: [{ id: "c1", title: "C1", goal: "g", files: ["src/index.ts", "src/util.ts"] }] },
+				chapter: { id: "c1", title: "C1", goal: "g", files: ["src/index.ts", "src/util.ts"] },
+				index: testIndex,
+				oracle: new SymbolOracle(testIndex),
+				client: scriptedClient([]),
+				scanFiles: scanOf([{ path: "src/index.ts" }, { path: "src/util.ts" }]).files,
+				readSource: async () => null,
+			},
+			["src/index.ts", "src/util.ts"],
+			{ declarationsPerFile: 10, repairPasses: 0, critiquePasses: 0, maxOutputTokens: 1000, targetModules: 1, multiplier: 1 } as never,
+		);
+
+		// Entry file includes doc and signatures
+		expect(prompt).toContain("Entry documentation");
+		expect(prompt).toContain("exportedEntry");
+
+		// Non-entry file includes exported declarations, but omits non-entry doc and internal declarations
+		expect(prompt).toContain("exportedOther");
+		expect(prompt).not.toContain("Other documentation");
+		expect(prompt).not.toContain("internalOther");
 	});
 });
 
@@ -773,5 +867,59 @@ describe("wiki: the run cascade", () => {
 			onProgress: (label) => labels.push(label),
 		});
 		expect(labels.some((l) => l.startsWith("chapter"))).toBe(true);
+	});
+
+	it("resumes an existing wiki run and skips chapters already written to disk", async () => {
+		const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+
+		const tempDir = await mkdtemp(join(tmpdir(), "kaioken-wiki-resume-"));
+		try {
+			const wikiChapterDir = join(tempDir, ".kaioken", "wiki", "core");
+			await mkdir(wikiChapterDir, { recursive: true });
+			await writeFile(
+				join(wikiChapterDir, "index.md"),
+				"# Pre-existing Core Chapter\n\nContent already generated.\n",
+				"utf8",
+			);
+
+			const twoChapterPlan: WikiPlan = {
+				version: 1,
+				generatedAt: "",
+				multiplier: 1,
+				chapters: [
+					{ id: "core", title: "Core", goal: "g1", files: ["src/a.ts"] },
+					{ id: "other", title: "Other", goal: "g2", files: ["src/b.ts"] },
+				],
+			};
+
+			const twoScan = scanOf([{ path: "src/a.ts" }, { path: "src/b.ts" }]);
+
+			const client = scriptedClient([
+				"# Other\n\nThe other module.",
+				JSON.stringify({ sections: [] }),
+			]);
+
+			const out = await runWiki({
+				root: tempDir,
+				plan: twoChapterPlan,
+				scan: twoScan,
+				index,
+				client,
+				resume: true,
+			});
+
+			// core should be reused from disk, other generated by client
+			expect(out.documents).toHaveLength(2);
+			const coreDoc = out.documents.find((d) => d.chapterId === "core");
+			expect(coreDoc?.body).toContain("Pre-existing Core Chapter");
+			// Client should only have completed requests for "other" (none for "core")
+			expect(client.requests).toHaveLength(2);
+			expect(client.requests[0]?.purpose).toBe("wiki-chapter");
+			expect(client.requests[1]?.purpose).toBe("wiki-sections");
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
 	});
 });

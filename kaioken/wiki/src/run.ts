@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { type IndexResult, SymbolOracle } from "@kaioken/index";
 import { DEFAULT_CONCURRENCY, mapLimitSettled, type ModelClient } from "@kaioken/modelport";
 import type { ScanResult } from "@kaioken/scan";
-import { documentPath, generateDocument } from "./generate.ts";
+import { wikiDir } from "./artifact.ts";
+import { documentPath, generateDocument, titleOf } from "./generate.ts";
 import { planSections } from "./plan.ts";
 import type { Chapter, RunFailure, Section, WikiDocument, WikiPlan } from "./types.ts";
 
@@ -34,6 +35,8 @@ export interface RunInput {
 	only?: string[];
 	/** Restrict the run to these exact document paths. */
 	onlyDocuments?: readonly string[];
+	/** When true, skips re-generating chapters and sections that already have documents on disk. */
+	resume?: boolean;
 	onDocument?: (doc: WikiDocument) => Promise<void>;
 	onFailure?: (failure: RunFailure) => void;
 	onProgress?: (label: string, done: number, total: number) => void;
@@ -107,31 +110,70 @@ export async function runWiki(input: RunInput): Promise<RunOutput> {
 		const docPath = documentPath(chapter);
 		const wantChapterDoc = !wantedDocSet || wantedDocSet.has(docPath);
 
+		let chapterAlreadyOnDisk = false;
 		if (wantChapterDoc) {
-			try {
-				const doc = await generateDocument({
-					plan: input.plan,
-					chapter,
-					index: input.index,
-					oracle,
-					client: input.client,
-					...(input.multiplier !== undefined ? { multiplier: input.multiplier } : {}),
-					...(input.brief ? { brief: input.brief } : {}),
-					scanFiles: input.scan.files,
-					readSource,
-				});
+			let existingBody: string | null = null;
+			if (input.resume) {
+				try {
+					existingBody = await readFile(join(wikiDir(input.root), docPath), "utf8");
+				} catch {
+					existingBody = null;
+				}
+			}
+
+			if (existingBody && existingBody.trim().length > 0) {
+				chapterAlreadyOnDisk = true;
+				const doc: WikiDocument = {
+					path: docPath,
+					chapterId: chapter.id,
+					title: titleOf(existingBody, chapter.title),
+					body: existingBody,
+					provenance: {
+						document: docPath,
+						chapterId: chapter.id,
+						generatedAt: new Date().toISOString(),
+						sources: chapter.files
+							.map((path) => {
+								const record = input.scan.files.find((f) => f.path === path);
+								return record ? { path, hash: record.hash } : null;
+							})
+							.filter((s): s is { path: string; hash: string } => s !== null),
+					},
+					verification: {
+						grounded: 0,
+						defects: [],
+						uncovered: [],
+						coverage: 1,
+					},
+				};
 				documentsMap.set(doc.path, doc);
 				sinkDocument(doc);
-			} catch (error) {
-				const reason = error instanceof Error ? error.message : String(error);
-				const failure: RunFailure = {
-					kind: "document",
-					chapterId: chapter.id,
-					document: docPath,
-					reason,
-				};
-				failures.push(failure);
-				input.onFailure?.(failure);
+			} else {
+				try {
+					const doc = await generateDocument({
+						plan: input.plan,
+						chapter,
+						index: input.index,
+						oracle,
+						client: input.client,
+						...(input.multiplier !== undefined ? { multiplier: input.multiplier } : {}),
+						...(input.brief ? { brief: input.brief } : {}),
+						scanFiles: input.scan.files,
+						readSource,
+					});
+					documentsMap.set(doc.path, doc);
+					sinkDocument(doc);
+				} catch (error) {
+					const reason = error instanceof Error ? error.message : String(error);
+					const failure: RunFailure = {
+						kind: "document",
+						chapterId: chapter.id,
+						document: docPath,
+						reason,
+					};
+					failures.push(failure);
+					input.onFailure?.(failure);
+				}
 			}
 		}
 
@@ -140,26 +182,32 @@ export async function runWiki(input: RunInput): Promise<RunOutput> {
 
 		// Sections are planned after the chapter document, so the chapter exists
 		// even if section planning fails.
-		try {
-			const sections = await planSections({
-				plan: input.plan,
-				chapter,
-				index: input.index,
-				client: input.client,
-				...(input.multiplier !== undefined ? { multiplier: input.multiplier } : {}),
-				...(input.brief ? { brief: input.brief } : {}),
-			});
-			if (sections.length > 0) resolved.set(chapter.id, sections);
-		} catch (error) {
-			const reason = error instanceof Error ? error.message : String(error);
-			const failure: RunFailure = {
-				kind: "sections",
-				chapterId: chapter.id,
-				document: docPath,
-				reason,
-			};
-			failures.push(failure);
-			input.onFailure?.(failure);
+		if (input.resume && chapterAlreadyOnDisk) {
+			if (chapter.sections && chapter.sections.length > 0) {
+				resolved.set(chapter.id, chapter.sections);
+			}
+		} else {
+			try {
+				const sections = await planSections({
+					plan: input.plan,
+					chapter,
+					index: input.index,
+					client: input.client,
+					...(input.multiplier !== undefined ? { multiplier: input.multiplier } : {}),
+					...(input.brief ? { brief: input.brief } : {}),
+				});
+				if (sections.length > 0) resolved.set(chapter.id, sections);
+			} catch (error) {
+				const reason = error instanceof Error ? error.message : String(error);
+				const failure: RunFailure = {
+					kind: "sections",
+					chapterId: chapter.id,
+					document: docPath,
+					reason,
+				};
+				failures.push(failure);
+				input.onFailure?.(failure);
+			}
 		}
 	});
 
@@ -175,32 +223,71 @@ export async function runWiki(input: RunInput): Promise<RunOutput> {
 
 	await mapLimitSettled(sectionJobs, limit, async ({ chapter, section }) => {
 		const path = documentPath(chapter, section);
-		try {
-			const doc = await generateDocument({
-				plan: input.plan,
-				chapter,
-				section,
-				index: input.index,
-				oracle,
-				client: input.client,
-				...(input.multiplier !== undefined ? { multiplier: input.multiplier } : {}),
-				...(input.brief ? { brief: input.brief } : {}),
-				scanFiles: input.scan.files,
-				readSource,
-			});
-			documentsMap.set(doc.path, doc);
-			sinkDocument(doc);
-		} catch (error) {
-			const reason = error instanceof Error ? error.message : String(error);
-			const failure: RunFailure = {
-				kind: "document",
+		let existingSectionBody: string | null = null;
+		if (input.resume) {
+			try {
+				existingSectionBody = await readFile(join(wikiDir(input.root), path), "utf8");
+			} catch {
+				existingSectionBody = null;
+			}
+		}
+
+		if (existingSectionBody && existingSectionBody.trim().length > 0) {
+			const doc: WikiDocument = {
+				path,
 				chapterId: chapter.id,
 				sectionId: section.id,
-				document: path,
-				reason,
+				title: titleOf(existingSectionBody, section.title),
+				body: existingSectionBody,
+				provenance: {
+					document: path,
+					chapterId: chapter.id,
+					sectionId: section.id,
+					generatedAt: new Date().toISOString(),
+					sources: section.files
+						.map((p) => {
+							const record = input.scan.files.find((f) => f.path === p);
+							return record ? { path: p, hash: record.hash } : null;
+						})
+						.filter((s): s is { path: string; hash: string } => s !== null),
+				},
+				verification: {
+					grounded: 0,
+					defects: [],
+					uncovered: [],
+					coverage: 1,
+				},
 			};
-			failures.push(failure);
-			input.onFailure?.(failure);
+			documentsMap.set(doc.path, doc);
+			sinkDocument(doc);
+		} else {
+			try {
+				const doc = await generateDocument({
+					plan: input.plan,
+					chapter,
+					section,
+					index: input.index,
+					oracle,
+					client: input.client,
+					...(input.multiplier !== undefined ? { multiplier: input.multiplier } : {}),
+					...(input.brief ? { brief: input.brief } : {}),
+					scanFiles: input.scan.files,
+					readSource,
+				});
+				documentsMap.set(doc.path, doc);
+				sinkDocument(doc);
+			} catch (error) {
+				const reason = error instanceof Error ? error.message : String(error);
+				const failure: RunFailure = {
+					kind: "document",
+					chapterId: chapter.id,
+					sectionId: section.id,
+					document: path,
+					reason,
+				};
+				failures.push(failure);
+				input.onFailure?.(failure);
+			}
 		}
 
 		done++;

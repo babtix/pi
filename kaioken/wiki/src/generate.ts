@@ -84,8 +84,25 @@ export async function generateDocument(input: GenerateInput): Promise<WikiDocume
 	});
 	body = stripFences(body);
 
+	const currentDocument = documentPath(input.chapter, input.section);
+	const knownDocuments = new Set<string>();
+	for (const ch of input.plan.chapters) {
+		knownDocuments.add(documentPath(ch));
+		for (const sec of ch.sections ?? []) {
+			knownDocuments.add(documentPath(ch, sec));
+		}
+	}
+
 	const verify = () =>
-		verifyDocument({ body, oracle: input.oracle, scope, readSource: input.readSource, knownFiles });
+		verifyDocument({
+			body,
+			oracle: input.oracle,
+			scope,
+			readSource: input.readSource,
+			knownFiles,
+			currentDocument,
+			knownDocuments,
+		});
 
 	let report = await verify();
 
@@ -180,7 +197,36 @@ export function documentPath(chapter: Chapter, section?: Section): string {
 	return section ? `${chapter.id}/${section.id}.md` : `${chapter.id}/index.md`;
 }
 
-function buildPrompt(input: GenerateInput, scope: readonly string[], depth: Depth): string {
+const MAX_EVIDENCE_CHARS = 24000;
+const ENTRY_POINT_NAMES = new Set([
+	"index.ts",
+	"index.js",
+	"index.tsx",
+	"index.jsx",
+	"main.go",
+	"main.rs",
+	"main.py",
+	"main.ts",
+	"main.js",
+	"mod.rs",
+	"lib.rs",
+	"cli.ts",
+	"bin.ts",
+	"app.ts",
+	"server.ts",
+]);
+
+function isEntryPointFile(path: string, chapterId: string, sectionId?: string): boolean {
+	const slash = path.lastIndexOf("/");
+	const base = slash === -1 ? path.toLowerCase() : path.slice(slash + 1).toLowerCase();
+	if (ENTRY_POINT_NAMES.has(base)) return true;
+	const stem = base.replace(/\.[^.]+$/, "");
+	if (stem === chapterId.toLowerCase()) return true;
+	if (sectionId && stem === sectionId.toLowerCase()) return true;
+	return false;
+}
+
+export function buildPrompt(input: GenerateInput, scope: readonly string[], depth: Depth): string {
 	const byPath = new Map((input.index?.files ?? []).map((f) => [f.path, f]));
 
 	const lines: string[] = [`Chapter: ${input.chapter.title}`, `Chapter goal: ${input.chapter.goal}`];
@@ -202,7 +248,18 @@ function buildPrompt(input: GenerateInput, scope: readonly string[], depth: Dept
 		"",
 	);
 
+	// Determine entry point files for hierarchical detail rationing
+	const entryFiles = new Set(scope.filter((p) => isEntryPointFile(p, input.chapter.id, input.section?.id)));
+	if (entryFiles.size === 0 && scope.length > 0) {
+		entryFiles.add(scope[0]!);
+	}
+
+	let totalChars = 0;
+	let capped = false;
+
 	for (const path of scope) {
+		if (capped) break;
+
 		const file = byPath.get(path);
 		lines.push(`--- ${path}`);
 		if (!file || file.symbols.length === 0) {
@@ -211,12 +268,28 @@ function buildPrompt(input: GenerateInput, scope: readonly string[], depth: Dept
 			continue;
 		}
 		lines.push(`  (${file.language}, ${file.lineCount} lines)`);
-		for (const symbol of file.symbols.slice(0, depth.declarationsPerFile)) {
+
+		const isEntry = entryFiles.has(path);
+		// For entry-point files, include full signatures and docs. For other files, include top-level exported symbols compactly.
+		const symbolsToInclude = isEntry
+			? file.symbols.slice(0, depth.declarationsPerFile)
+			: file.symbols.filter((s) => s.exported).slice(0, depth.declarationsPerFile);
+
+		for (const symbol of symbolsToInclude) {
 			const owner = symbol.parent ? `${symbol.parent}.` : "";
-			lines.push(
-				`  ${symbol.exported ? "+" : "-"} ${owner}${symbol.name} [${symbol.startLine}-${symbol.endLine}] — ${symbol.signature}`,
-			);
-			if (symbol.doc) lines.push(`      ${firstLine(symbol.doc)}`);
+			const sig = `  ${symbol.exported ? "+" : "-"} ${owner}${symbol.name} [${symbol.startLine}-${symbol.endLine}] — ${symbol.signature}`;
+			lines.push(sig);
+			totalChars += sig.length;
+			if (isEntry && symbol.doc) {
+				const docLine = `      ${firstLine(symbol.doc)}`;
+				lines.push(docLine);
+				totalChars += docLine.length;
+			}
+			if (totalChars > MAX_EVIDENCE_CHARS) {
+				lines.push("  ... (remaining declarations omitted for context budget)");
+				capped = true;
+				break;
+			}
 		}
 		lines.push("");
 	}
@@ -259,7 +332,7 @@ function stripFences(reply: string): string {
 	return (fenced ? (fenced[1] as string) : trimmed).trim();
 }
 
-function titleOf(body: string, fallback: string): string {
+export function titleOf(body: string, fallback: string): string {
 	for (const line of body.split(/\r?\n/)) {
 		const heading = /^#\s+(.*)$/.exec(line);
 		if (heading) {

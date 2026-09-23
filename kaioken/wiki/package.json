@@ -20,6 +20,7 @@
     "@kaioken/modelport": "0.1.0",
     "@kaioken/provenance": "0.1.0",
     "@kaioken/scan": "0.1.0",
+    "@kaioken/verifycore": "0.1.0",
     "yaml": "2.9.0"
   },
   "devDependencies": {

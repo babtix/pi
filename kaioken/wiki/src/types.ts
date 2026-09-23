@@ -1,6 +1,28 @@
 import type { Provenance, ProvenanceIndex, ProvenanceSource } from "@kaioken/provenance";
+import type {
+	Claim,
+	ClaimKind,
+	Defect as CoreDefect,
+	VerificationReport as CoreVerificationReport,
+} from "@kaioken/verifycore";
 
-export type { Provenance, ProvenanceIndex, ProvenanceSource };
+export type Defect =
+	| CoreDefect
+	| {
+			kind: "broken_link";
+			claim: string;
+			line?: number;
+			detail: string;
+	  };
+
+export interface VerificationReport {
+	grounded: number;
+	defects: Defect[];
+	uncovered: string[];
+	coverage: number;
+}
+
+export type { Claim, ClaimKind, Provenance, ProvenanceIndex, ProvenanceSource };
 
 /**
  * The wiki is a plan-then-elaborate cascade, not one big generation call. Each
@@ -36,47 +58,6 @@ export interface WikiPlan {
 	chapters: Chapter[];
 }
 
-/** A claim a generated document makes that can be checked against ground truth. */
-export type ClaimKind = "file" | "symbol" | "anchor" | "excerpt";
-
-export interface Claim {
-	kind: ClaimKind;
-	/** The literal text as written in the document. */
-	text: string;
-	/** 1-based line in the generated document, so a defect can be located. */
-	line: number;
-	/** For anchors and excerpts: the file the claim attaches to. */
-	file?: string;
-	startLine?: number;
-	endLine?: number;
-}
-
-export interface Defect {
-	kind:
-		| "unknown_file"
-		| "unknown_symbol"
-		| "bad_anchor"
-		| "excerpt_not_found"
-		| "excerpt_ambiguous"
-		| "uncovered_export"
-		| "padding";
-	/** What the document said. */
-	claim: string;
-	/** Line in the generated document. */
-	line?: number;
-	detail: string;
-}
-
-export interface VerificationReport {
-	/** Claims checked and confirmed. */
-	grounded: number;
-	/** Claims that could not be confirmed. Reported, never shipped silently. */
-	defects: Defect[];
-	/** Exported declarations in scope the document never mentions. */
-	uncovered: string[];
-	/** Fraction of in-scope exports the document covers, 0..1. */
-	coverage: number;
-}
 
 /** One generated document, with everything needed to judge and re-derive it. */
 export interface WikiDocument {
