@@ -1,3 +1,5 @@
+import { readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { IndexResult } from "@kaioken/index";
 import { extractJson, type ModelClient } from "@kaioken/modelport";
 import { gatherEvidence, type RepositoryEvidence } from "@kaioken/plan";
@@ -57,13 +59,82 @@ export interface ProposeInput {
 	notes?: readonly string[];
 	/** Upper bound on how many skills to keep. */
 	limit?: number;
+	/** Repository root to discover commands from. Defaults to scan.root. */
+	root?: string;
+	/** Explicit repository commands or workflow steps to ground the proposal in. */
+	commands?: readonly string[];
+}
+
+export async function discoverRepoCommands(root: string): Promise<string[]> {
+	const commands: string[] = [];
+
+	// 1. package.json scripts
+	try {
+		const pkgRaw = await readFile(join(root, "package.json"), "utf8");
+		const pkg = JSON.parse(pkgRaw) as { scripts?: Record<string, unknown> };
+		if (pkg && typeof pkg === "object" && pkg.scripts && typeof pkg.scripts === "object") {
+			for (const [name, script] of Object.entries(pkg.scripts)) {
+				if (typeof script === "string" && script.trim()) {
+					commands.push(`npm run ${name} (${script.trim()})`);
+				}
+			}
+		}
+	} catch {
+		// package.json is optional
+	}
+
+	// 2. Makefile targets
+	try {
+		const makefile = await readFile(join(root, "Makefile"), "utf8");
+		for (const match of makefile.matchAll(/^([a-zA-Z0-9_.-]+)\s*:/gm)) {
+			const target = match[1]?.trim();
+			if (target && !target.startsWith(".") && target !== "Makefile") {
+				commands.push(`make ${target}`);
+			}
+		}
+	} catch {
+		// Makefile is optional
+	}
+
+	// 3. GitHub Actions workflow step commands
+	try {
+		const workflowsDir = join(root, ".github", "workflows");
+		const entries = await readdir(workflowsDir, { withFileTypes: true });
+		for (const entry of entries) {
+			if (entry.isFile() && (entry.name.endsWith(".yml") || entry.name.endsWith(".yaml"))) {
+				const content = await readFile(join(workflowsDir, entry.name), "utf8");
+				for (const match of content.matchAll(/^\s*(?:-\s+)?run:\s*(?:\|-?|>)?\s*([^\n]+)/gm)) {
+					const cmd = match[1]?.trim();
+					if (cmd && !cmd.startsWith("|") && !cmd.startsWith(">")) {
+						commands.push(cmd);
+					}
+				}
+			}
+		}
+	} catch {
+		// .github/workflows is optional
+	}
+
+	return [...new Set(commands)].slice(0, 40);
 }
 
 export async function proposeSkills(input: ProposeInput): Promise<SkillProposal[]> {
 	const evidence = gatherEvidence(input.scan, input.index);
+	let commands = input.commands ?? [];
+	if (commands.length === 0) {
+		const root = input.root ?? input.scan.root;
+		if (root) {
+			try {
+				commands = await discoverRepoCommands(root);
+			} catch {
+				commands = [];
+			}
+		}
+	}
+
 	const raw = await input.client.complete({
 		system: PLAN_SYSTEM,
-		prompt: buildPlanPrompt(evidence, input.chapters ?? [], input.notes ?? []),
+		prompt: buildPlanPrompt(evidence, input.chapters ?? [], input.notes ?? [], commands),
 		purpose: "skill plan",
 	});
 
@@ -125,6 +196,7 @@ function buildPlanPrompt(
 	evidence: RepositoryEvidence,
 	chapters: readonly string[],
 	notes: readonly string[],
+	commands: readonly string[] = [],
 ): string {
 	const languages = Object.entries(evidence.languages)
 		.sort((a, b) => b[1] - a[1])
@@ -149,6 +221,13 @@ function buildPlanPrompt(
 	}
 	if (evidence.readmes.length > 0) {
 		out.push(`Readmes: ${evidence.readmes.slice(0, 10).join(", ")}`);
+	}
+	if (commands.length > 0) {
+		out.push(
+			"",
+			"Discovered repository commands and workflow steps (ground skill tasks in these):",
+			...commands.map((cmd) => `- ${cmd}`),
+		);
 	}
 	if (chapters.length > 0) {
 		out.push(

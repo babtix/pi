@@ -1,10 +1,11 @@
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { IndexResult } from "@kaioken/index";
 import type { ModelClient } from "@kaioken/modelport";
 import { gatherModuleEvidence } from "@kaioken/plan";
 import type { ScanResult } from "@kaioken/scan";
 import { skillsDir } from "@kaioken/skills";
+import { detectCommands } from "@kaioken/verify";
 import type { SkillProposal } from "./propose.ts";
 
 /**
@@ -56,6 +57,12 @@ Rules:
 
 Output ONLY the markdown body. No frontmatter, no JSON, no commentary.`;
 
+const REPAIR_SYSTEM = `You revise a skill document against a defect report.
+
+Fix exactly what the report names: replace or remove citations to files that do
+not exist in this repository, and ensure all cited paths match real repository files.
+Keep the rest of the markdown document intact and concise. Output ONLY the markdown body.`;
+
 export interface WriteSkillInput {
 	root: string;
 	proposal: SkillProposal;
@@ -63,6 +70,7 @@ export interface WriteSkillInput {
 	index: IndexResult | null;
 	client: ModelClient;
 	notes?: readonly string[];
+	repairPasses?: number;
 }
 
 export interface WrittenSkill {
@@ -80,6 +88,11 @@ export interface WrittenSkill {
 	 * actively harmful, and the author is the only person who can fix it.
 	 */
 	ungrounded: string[];
+	/**
+	 * Prescribed verification commands in ## Verification that do not correspond
+	 * to anything declared in the repository.
+	 */
+	unverifiedCommands: string[];
 }
 
 export async function writeSkill(input: WriteSkillInput): Promise<WrittenSkill> {
@@ -88,7 +101,7 @@ export async function writeSkill(input: WriteSkillInput): Promise<WrittenSkill> 
 
 	const evidence = gatherModuleEvidence(input.index, sources, { knownFiles: known });
 
-	const body = unfence(
+	let body = unfence(
 		(
 			await input.client.complete({
 				system: WRITE_SYSTEM,
@@ -98,6 +111,24 @@ export async function writeSkill(input: WriteSkillInput): Promise<WrittenSkill> 
 		).trim(),
 	);
 	if (!body) throw new Error(`the model returned an empty body for skill "${input.proposal.name}"`);
+
+	let ungrounded = citedButMissing(body, known);
+	const repairPasses = input.repairPasses ?? 2;
+
+	for (let pass = 0; pass < repairPasses && ungrounded.length > 0; pass++) {
+		const revisedRaw = await input.client.complete({
+			system: REPAIR_SYSTEM,
+			prompt: buildCorrectionPrompt(body, ungrounded, evidence),
+			purpose: `skill repair ${input.proposal.name} pass ${pass + 1}`,
+		});
+		const revisedBody = unfence(revisedRaw.trim());
+		if (!revisedBody) continue;
+		const candidateUngrounded = citedButMissing(revisedBody, known);
+		if (candidateUngrounded.length < ungrounded.length) {
+			body = revisedBody;
+			ungrounded = candidateUngrounded;
+		}
+	}
 
 	const description = input.proposal.description || input.proposal.task;
 	const document = [
@@ -118,13 +149,17 @@ export async function writeSkill(input: WriteSkillInput): Promise<WrittenSkill> 
 	const file = join(dir, `${input.proposal.name}.md`);
 	await writeFile(file, document, "utf8");
 
+	const prescribed = extractPrescribedCommands(body);
+	const unverifiedCommands = await validateVerificationCommands(input.root, prescribed);
+
 	return {
 		name: input.proposal.name,
 		description,
 		path: `.kaioken/skills/${input.proposal.name}.md`,
 		lines: document.split("\n").length,
 		sources,
-		ungrounded: citedButMissing(body, known),
+		ungrounded,
+		unverifiedCommands,
 	};
 }
 
@@ -225,4 +260,200 @@ function unfence(text: string): string {
 		}
 	}
 	return out.trim();
+}
+
+function buildCorrectionPrompt(
+	body: string,
+	ungrounded: readonly string[],
+	evidence: ReturnType<typeof gatherModuleEvidence>,
+): string {
+	const lines = [
+		"Your previous skill document cited file paths that do NOT exist in this repository:",
+		...ungrounded.map((path) => `- \`${path}\``),
+		"",
+		"Replace or remove citations to those nonexistent files. Only cite files that exist in the evidence sources below:",
+		"",
+		...evidence.files.map((file) => `- \`${file.path}\``),
+		"",
+		"Previous draft:",
+		body,
+	];
+	return lines.join("\n");
+}
+
+const COMMAND_RUNNERS = new Set([
+	"npm",
+	"npx",
+	"pnpm",
+	"pnpx",
+	"yarn",
+	"bun",
+	"bunx",
+	"deno",
+	"cargo",
+	"go",
+	"make",
+	"pytest",
+	"python",
+	"python3",
+	"vitest",
+	"jest",
+	"tsc",
+	"gradle",
+	"mvn",
+	"rake",
+	"dotnet",
+	"mix",
+]);
+
+function isLikelyCommand(candidate: string): boolean {
+	if (!candidate || candidate.length > 200) return false;
+	if (candidate.startsWith("http://") || candidate.startsWith("https://")) return false;
+	if (/^[\w./-]+\.[A-Za-z0-9]{1,8}$/.test(candidate) && !candidate.startsWith("./")) return false;
+
+	const firstWord = candidate.split(/\s+/)[0] ?? "";
+	if (COMMAND_RUNNERS.has(firstWord)) return true;
+	if (candidate.startsWith("./") || candidate.startsWith("sh ") || candidate.startsWith("bash ")) return true;
+	return false;
+}
+
+export function extractPrescribedCommands(body: string): string[] {
+	const match = body.match(/^##\s+Verification\b([^\n]*\n(?:(?!^##\s+).*\n*)*)/im);
+	if (!match || !match[1]) return [];
+	const section = match[1];
+
+	const commands = new Set<string>();
+
+	for (const block of section.matchAll(/```(?:[a-zA-Z0-9_-]+)?\s*\n([\s\S]*?)\n```/g)) {
+		const lines = (block[1] ?? "").split("\n");
+		for (const line of lines) {
+			const trimmed = line.trim().replace(/^[$>]\s*/, "");
+			if (trimmed && !trimmed.startsWith("#") && !trimmed.startsWith("//")) {
+				commands.add(trimmed);
+			}
+		}
+	}
+
+	for (const inline of section.matchAll(/`([^`\n]+)`/g)) {
+		const candidate = (inline[1] ?? "").trim().replace(/^[$>]\s*/, "");
+		if (isLikelyCommand(candidate)) {
+			commands.add(candidate);
+		}
+	}
+
+	return [...commands];
+}
+
+async function pathExists(file: string): Promise<boolean> {
+	try {
+		await stat(file);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export async function validateVerificationCommands(
+	root: string,
+	commands: readonly string[],
+): Promise<string[]> {
+	if (commands.length === 0) return [];
+
+	let gateCommands: string[] = [];
+	try {
+		const detected = await detectCommands(root);
+		gateCommands = detected.commands.map((c) => c.command.trim());
+	} catch {
+		// ignore
+	}
+
+	const packageScripts = new Set<string>();
+	try {
+		const pkgContent = await readFile(join(root, "package.json"), "utf8");
+		const pkg = JSON.parse(pkgContent) as { scripts?: Record<string, unknown> };
+		if (pkg && typeof pkg === "object" && pkg.scripts && typeof pkg.scripts === "object") {
+			for (const key of Object.keys(pkg.scripts)) {
+				packageScripts.add(key);
+			}
+		}
+	} catch {
+		// ignore
+	}
+
+	const makeTargets = new Set<string>();
+	try {
+		const makeContent = await readFile(join(root, "Makefile"), "utf8");
+		for (const match of makeContent.matchAll(/^([a-zA-Z0-9_.-]+)\s*:/gm)) {
+			const target = match[1]?.trim();
+			if (target && !target.startsWith(".")) makeTargets.add(target);
+		}
+	} catch {
+		// ignore
+	}
+
+	const hasCargo = await pathExists(join(root, "Cargo.toml"));
+	const hasGo = await pathExists(join(root, "go.mod"));
+	const hasPy =
+		(await pathExists(join(root, "pyproject.toml"))) ||
+		(await pathExists(join(root, "setup.py"))) ||
+		(await pathExists(join(root, "requirements.txt")));
+	const hasDeno =
+		(await pathExists(join(root, "deno.json"))) ||
+		(await pathExists(join(root, "deno.jsonc")));
+
+	const unverified: string[] = [];
+
+	for (const cmd of commands) {
+		const clean = cmd.trim();
+		if (!clean) continue;
+
+		if (gateCommands.some((gc) => clean === gc || clean.startsWith(gc) || gc.startsWith(clean))) {
+			continue;
+		}
+
+		const pmMatch = /^(?:npm|pnpm|yarn|bun)(?:\s+run)?\s+([a-zA-Z0-9:_-]+)/.exec(clean);
+		if (pmMatch) {
+			const scriptName = pmMatch[1];
+			if (scriptName && packageScripts.has(scriptName)) {
+				continue;
+			}
+			if (scriptName === "test" && (packageScripts.has("test") || gateCommands.length > 0)) {
+				continue;
+			}
+		}
+
+		const makeMatch = /^make(?:\s+([a-zA-Z0-9_.-]+))?/.exec(clean);
+		if (makeMatch) {
+			const target = makeMatch[1] ?? "";
+			if (!target && makeTargets.size > 0) continue;
+			if (target && makeTargets.has(target)) continue;
+		}
+
+		if (hasCargo && /^cargo\s+(?:test|build|check|run|clippy)/.test(clean)) {
+			continue;
+		}
+
+		if (hasGo && /^go\s+(?:test|build|vet|run)/.test(clean)) {
+			continue;
+		}
+
+		if (hasPy && /^(?:pytest|python\s+-m\s+unittest)/.test(clean)) {
+			continue;
+		}
+
+		if (hasDeno && /^deno\s+(?:test|check|lint)/.test(clean)) {
+			continue;
+		}
+
+		if (clean.startsWith("./")) {
+			const scriptPath = clean.split(/\s+/)[0]?.replace(/^\.\//, "") ?? "";
+			if (await pathExists(join(root, scriptPath))) {
+				continue;
+			}
+		}
+
+		unverified.push(clean);
+	}
+
+	return unverified;
 }

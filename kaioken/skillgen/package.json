@@ -20,7 +20,8 @@
     "@kaioken/modelport": "0.1.0",
     "@kaioken/plan": "0.1.0",
     "@kaioken/scan": "0.1.0",
-    "@kaioken/skills": "0.1.0"
+    "@kaioken/skills": "0.1.0",
+    "@kaioken/verify": "0.1.0"
   },
   "devDependencies": {
     "vitest": "4.1.9"

@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IndexResult } from "@kaioken/index";
 import type { ModelClient, ModelRequest } from "@kaioken/modelport";
 import type { ScanResult } from "@kaioken/scan";
-import { proposeSkills, slug } from "../src/propose.ts";
+import {
+	discoverRepoCommands,
+	extractPrescribedCommands,
+	proposeSkills,
+	slug,
+	validateVerificationCommands,
+} from "../src/index.ts";
 import { skillExists, writeSkill } from "../src/write.ts";
 
 function scriptedClient(replies: string[]): ModelClient & { requests: ModelRequest[] } {
@@ -132,6 +138,50 @@ describe("skillgen: proposal", () => {
 		await proposeSkills({ scan, index, client, chapters: ["Architecture"], notes: ["Prefer tests first."] });
 		expect(client.requests[0]?.prompt).toContain("Architecture");
 		expect(client.requests[0]?.prompt).toContain("Prefer tests first.");
+	});
+
+	it("seeds proposal prompt with discovered package.json scripts", async () => {
+		const root = await mkdtemp(join(tmpdir(), "kaioken-prop-"));
+		try {
+			await writeFile(
+				join(root, "package.json"),
+				JSON.stringify({
+					scripts: {
+						build: "tsc",
+						test: "vitest",
+						lint: "eslint",
+					},
+				}),
+				"utf8",
+			);
+			const client = scriptedClient([JSON.stringify({ skills: [] })]);
+			await proposeSkills({ scan: { ...scan, root }, index, client, root });
+			expect(client.requests[0]?.prompt).toContain("Discovered repository commands");
+			expect(client.requests[0]?.prompt).toContain("npm run build (tsc)");
+			expect(client.requests[0]?.prompt).toContain("npm run test (vitest)");
+			expect(client.requests[0]?.prompt).toContain("npm run lint (eslint)");
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("discovers commands from Makefile and GitHub workflows", async () => {
+		const root = await mkdtemp(join(tmpdir(), "kaioken-prop-"));
+		try {
+			await writeFile(join(root, "Makefile"), "build:\n\tcargo build\n\ntest:\n\tcargo test\n", "utf8");
+			await mkdir(join(root, ".github", "workflows"), { recursive: true });
+			await writeFile(
+				join(root, ".github", "workflows", "ci.yml"),
+				"name: CI\njobs:\n  test:\n    steps:\n      - run: cargo check --all\n",
+				"utf8",
+			);
+			const discovered = await discoverRepoCommands(root);
+			expect(discovered).toContain("make build");
+			expect(discovered).toContain("make test");
+			expect(discovered).toContain("cargo check --all");
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
 	});
 });
 
@@ -261,6 +311,101 @@ describe("skillgen: writing", () => {
 			const client = scriptedClient(["# T\n\nBody."]);
 			await writeSkill({ root, proposal, scan, index, client });
 			expect(await skillExists(root, "add-a-command")).toBe(true);
+		});
+	});
+
+	it("triggers repair pass when ungrounded paths are found and resolves them", async () => {
+		await withRoot(async (root) => {
+			const client = scriptedClient([
+				"# T\n\nEdit `src/ghost/file.ts` and `src/commands/add.ts`.",
+				"# T\n\nEdit `src/commands/add.ts`.",
+			]);
+			const written = await writeSkill({ root, proposal, scan, index, client });
+			expect(client.requests).toHaveLength(2);
+			expect(client.requests[1]?.purpose).toContain("skill repair");
+			expect(client.requests[1]?.prompt).toContain("src/ghost/file.ts");
+			expect(written.ungrounded).toEqual([]);
+			const saved = await readFile(join(root, ".kaioken", "skills", "add-a-command.md"), "utf8");
+			expect(saved).not.toContain("src/ghost/file.ts");
+			expect(saved).toContain("src/commands/add.ts");
+		});
+	});
+
+	it("rejects a repair candidate if ungrounded count does not improve", async () => {
+		await withRoot(async (root) => {
+			const client = scriptedClient([
+				"# T\n\nEdit `src/ghost/file.ts`.",
+				"# T\n\nEdit `src/ghost/file.ts` and `src/ghost/file2.ts`.",
+			]);
+			const written = await writeSkill({ root, proposal, scan, index, client, repairPasses: 1 });
+			expect(client.requests).toHaveLength(2);
+			// Reverted back to the original draft with fewer defects
+			expect(written.ungrounded).toEqual(["src/ghost/file.ts"]);
+		});
+	});
+
+	it("bounds repair passes when model cannot resolve ungrounded citations", async () => {
+		await withRoot(async (root) => {
+			const client = scriptedClient(["# T\n\nEdit `src/ghost/file.ts`."]);
+			const written = await writeSkill({ root, proposal, scan, index, client, repairPasses: 2 });
+			// 1 initial + 2 repair attempts
+			expect(client.requests).toHaveLength(3);
+			expect(written.ungrounded).toEqual(["src/ghost/file.ts"]);
+		});
+	});
+
+	it("validates prescribed verification commands against repo declarations", async () => {
+		await withRoot(async (root) => {
+			await writeFile(
+				join(root, "package.json"),
+				JSON.stringify({
+					scripts: {
+						test: "vitest",
+					},
+				}),
+				"utf8",
+			);
+			const body = [
+				"# Add a command",
+				"",
+				"Edit `src/commands/add.ts`.",
+				"",
+				"## Verification",
+				"Run `npm test` to verify changes.",
+				"Also run `npm run nonexistent-lint` and `cargo test`.",
+			].join("\n");
+
+			const client = scriptedClient([body]);
+			const written = await writeSkill({ root, proposal, scan, index, client });
+			expect(written.ungrounded).toEqual([]);
+			expect(written.unverifiedCommands).toEqual(["npm run nonexistent-lint", "cargo test"]);
+		});
+	});
+
+	it("extracts prescribed commands from markdown code blocks and backticks", () => {
+		const body = [
+			"# T",
+			"",
+			"## Verification",
+			"```bash",
+			"npm run test",
+			"# comment line",
+			"npm run build",
+			"```",
+			"You can also run `make test` or inspect `src/foo.ts`.",
+		].join("\n");
+		const commands = extractPrescribedCommands(body);
+		expect(commands).toContain("npm run test");
+		expect(commands).toContain("npm run build");
+		expect(commands).toContain("make test");
+		expect(commands).not.toContain("src/foo.ts");
+	});
+
+	it("validates Makefile verification commands", async () => {
+		await withRoot(async (root) => {
+			await writeFile(join(root, "Makefile"), "check:\n\ttrue\n", "utf8");
+			const unverified = await validateVerificationCommands(root, ["make check", "make unknown"]);
+			expect(unverified).toEqual(["make unknown"]);
 		});
 	});
 });
