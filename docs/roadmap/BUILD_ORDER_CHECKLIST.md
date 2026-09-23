@@ -74,10 +74,10 @@
 ### Step 7: Category 08 — Search, Lexical Indexing & BM25 Retrieval
 *Rank: #7 Instant Code Discovery | Package: `kaioken/search` | Features: `#UX-0701` – `#UX-0800`*  
 📄 **Plan Reference**: [`08-search-lexical-indexing-bm25-retrieval.md`](categories/08-search-lexical-indexing-bm25-retrieval.md)
-- [ ] **7.1** Implement instant search-as-you-type live query preview across code, docs, and cards (`UX-0701`–`UX-0710`)
-- [ ] **7.2** Optimize in-memory inverted postings lists with BM25 ranking algorithm (`UX-0711`–`UX-0720`)
-- [ ] **7.3** Add exact phrase quote matching and directory/file-path boosting (`UX-0721`–`UX-0730`)
-- [ ] **7.4** Build Reciprocal Rank Fusion (RRF) score visualizer explaining result ranking (`UX-0731`–`UX-0740`)
+- [x] **7.1** Implement instant search-as-you-type live query preview across code, docs, and cards (`UX-0701`–`UX-0710`)
+- [x] **7.2** Optimize in-memory inverted postings lists with BM25 ranking algorithm (`UX-0711`–`UX-0720`)
+- [x] **7.3** Add exact phrase quote matching and directory/file-path boosting (`UX-0721`–`UX-0730`)
+- [x] **7.4** Build Reciprocal Rank Fusion (RRF) score visualizer explaining result ranking (`UX-0731`–`UX-0740`)
 
 ---
 

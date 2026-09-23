@@ -64,6 +64,9 @@ Global Options:
 
 Command Options:
   search:   --limit <n>          Maximum search results to return (default: 8)
+            --preview            Instant live query preview across code, docs, cards
+            --explain            Reciprocal Rank Fusion (RRF) & BM25 score visualizer
+            --boost <path:mul>   Custom directory boost multipliers (e.g. "src:1.5,api:2.0")
   plan:     --multiplier <n>     Depth multiplier for planning (default: 1)
   serve:    --port <n>           Port for preview server (default: 4173)
             --host <str>         Host to bind server to (default: 127.0.0.1)
@@ -84,6 +87,9 @@ async function main(): Promise<void> {
 			json: { type: "boolean" },
 			help: { type: "boolean", short: "h" },
 			limit: { type: "string" },
+			preview: { type: "boolean" },
+			explain: { type: "boolean" },
+			boost: { type: "string" },
 			multiplier: { type: "string" },
 			port: { type: "string" },
 			host: { type: "string" },
@@ -189,7 +195,26 @@ async function main(): Promise<void> {
 		case "search": {
 			const query = args.join(" ").trim();
 			const limit = values.limit ? parseInt(String(values.limit), 10) : 8;
-			const results = await bm25Search(root, query, limit);
+			const isPreview = Boolean(values.preview);
+			const isExplain = Boolean(values.explain);
+			let boostRecord: Record<string, number> | undefined;
+			if (values.boost) {
+				boostRecord = {};
+				const pairs = String(values.boost).split(",");
+				for (const p of pairs) {
+					const [dir, factor] = p.split(":");
+					if (dir && factor) {
+						boostRecord[dir.trim()] = parseFloat(factor.trim()) || 1.0;
+					}
+				}
+			}
+			const results = await bm25Search(root, query, {
+				limit,
+				preview: isPreview,
+				explain: isExplain,
+				boost: boostRecord,
+				json: isJson,
+			});
 			console.log(results);
 			break;
 		}

@@ -5,8 +5,11 @@
  */
 
 /** K1 controls how fast term frequency saturates; B how hard length normalisation bites. */
-const K1 = 1.2;
-const B = 0.75;
+export const K1 = 1.2;
+export const B = 0.75;
+
+export { CompactPostingsList, OptimizedLexicon, SearchSessionCache } from "./postings.ts";
+export type { BM25Parameters, PostingEntry, PostingsStats } from "./postings.ts";
 
 export interface Ranked {
 	id: number;

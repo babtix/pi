@@ -3,7 +3,10 @@ import { dirname, join, resolve } from "node:path";
 import { KAIOKEN_DIR } from "@kaioken/scan";
 import { analyze } from "./analyze.ts";
 import { cosine, Lexicon, phraseBonus, type Ranked, rrf, topN } from "./bm25.ts";
+import { applyPathBoost, calculatePhraseQuoteBonus, parseQueryQuotes, type PathBoostConfig } from "./boost.ts";
 import { type Chunk, collect, type Corpus, type Doc, type Kind } from "./corpus.ts";
+import { buildScoreExplanation, type ScoreExplanation, type TermScoreContribution } from "./explain.ts";
+import { OptimizedLexicon, SearchSessionCache } from "./postings.ts";
 
 export const SEARCH_DIR = join(KAIOKEN_DIR, "search-index");
 
@@ -12,7 +15,7 @@ export function searchIndexPath(root: string): string {
 }
 
 /** The persisted form. Tokens are recomputed on load — they would triple the file. */
-interface PersistedIndex {
+export interface PersistedIndex {
 	version: 1;
 	builtAt: string;
 	fingerprint: string;
@@ -28,6 +31,14 @@ export interface SearchQuery {
 	/** Restrict to one or more tenants. */
 	kinds?: Kind[];
 	section?: string;
+	/** Directory and file path boosting options. */
+	pathBoost?: PathBoostConfig;
+	/** Additional explicit exact phrase quotes. */
+	exactQuotes?: string[];
+	/** Generate detailed RRF and BM25 score explanation. */
+	explain?: boolean;
+	/** Use zero-disk session query cache (default: true). */
+	useCache?: boolean;
 }
 
 export interface SearchHit {
@@ -41,6 +52,8 @@ export interface SearchHit {
 	snippet: string;
 	/** Which rankings contributed. Makes it visible when semantic ranking is off. */
 	via: ("lexical" | "semantic")[];
+	/** Optional transparent score explanation. */
+	explanation?: ScoreExplanation;
 }
 
 /**
@@ -54,13 +67,15 @@ export interface EmbeddingProvider {
 
 export class SearchIndex {
 	private readonly lexicon: Lexicon;
-
+	private readonly optimizedLexicon: OptimizedLexicon;
+	private readonly sessionCache = new SearchSessionCache<SearchHit[]>(256, 120_000);
 	private readonly data: PersistedIndex;
 
 	private constructor(data: PersistedIndex) {
 		this.data = data;
 		const tokens = data.chunks.map((chunk) => analyze(`${chunk.heading}\n${chunk.text}`));
 		this.lexicon = new Lexicon(tokens);
+		this.optimizedLexicon = new OptimizedLexicon(tokens);
 	}
 
 	static async build(
@@ -140,36 +155,90 @@ export class SearchIndex {
 		return out;
 	}
 
+	getLexicon(): Lexicon {
+		return this.lexicon;
+	}
+
+	getOptimizedLexicon(): OptimizedLexicon {
+		return this.optimizedLexicon;
+	}
+
+	getSessionCache(): SearchSessionCache<SearchHit[]> {
+		return this.sessionCache;
+	}
+
+	getChunks(): readonly Chunk[] {
+		return this.data.chunks;
+	}
+
+	getDocs(): readonly Doc[] {
+		return this.data.docs;
+	}
+
 	/**
-	 * Rank a query.
-	 *
-	 * Lexical ranking always runs. Semantic ranking runs only if vectors are
-	 * present and the caller supplies a provider to embed the query; when either
-	 * is missing the result is plain BM25 rather than an error. Degradation is
-	 * silent and total by design.
+	 * Rank a query with BM25, exact phrase quote bonuses, directory boosting,
+	 * session caching, and optional RRF hybrid rank fusion.
 	 */
 	async search(query: SearchQuery, provider?: EmbeddingProvider): Promise<SearchHit[]> {
 		const limit = query.limit ?? 10;
-		const terms = analyze(query.text);
+		const useCache = query.useCache !== false && !provider;
+		const cacheKey = JSON.stringify({
+			t: query.text,
+			l: limit,
+			k: query.kinds,
+			s: query.section,
+			b: query.pathBoost,
+			q: query.exactQuotes,
+			e: query.explain,
+		});
+
+		if (useCache) {
+			const cached = this.sessionCache.get(cacheKey);
+			if (cached) return cached;
+		}
+
+		const parsedQuery = parseQueryQuotes(query.text);
+		const allQuotes = [...parsedQuery.exactQuotes, ...(query.exactQuotes ?? [])];
+		const terms = analyze(parsedQuery.cleanText.length > 0 ? parsedQuery.cleanText : query.text);
 		const candidates = this.filter(query);
 
-		// A query of nothing but stopwords analyses to no terms, so lexical
-		// ranking has nothing to score. That is a reason to skip *lexical*
-		// ranking, not to abandon the search: the semantic layer embeds the raw
-		// query and never sees the analyzer, so returning early here silently
-		// disabled the half of hybrid search that could still answer.
 		let lexical: Ranked[] = [];
+		const lexicalRawScores = new Map<number, number>();
+		const lexicalQuoteBonuses = new Map<number, { bonus: number; matched: string[] }>();
+		const lexicalPathBoosts = new Map<number, { multiplier: number; reason: string }>();
+
 		if (terms.length > 0) {
 			const candidateSet =
 				candidates.length === this.data.chunks.length ? null : new Set(candidates);
-			const bm25Scores = this.lexicon.score(terms);
+			const bm25Scores = this.optimizedLexicon.score(terms);
 			const entries: Ranked[] = [];
 
 			for (const [id, bm25Score] of bm25Scores) {
 				if (candidateSet && !candidateSet.has(id)) continue;
-				const score = bm25Score + phraseBonus(query.text, (this.data.chunks[id] as Chunk).text);
-				if (score > 0) {
-					entries.push({ id, score });
+				const chunk = this.data.chunks[id] as Chunk;
+				const doc = this.data.docs[chunk.doc] as Doc;
+
+				// Contiguous phrase bonus (single query & multi-word quotes)
+				const basePhrase = phraseBonus(query.text, chunk.text);
+				const quoteResult = calculatePhraseQuoteBonus(allQuotes, chunk.text);
+				const totalQuoteBonus = basePhrase + quoteResult.bonus;
+
+				// Directory and file-path boosting
+				const pathBoostResult = applyPathBoost(doc.path, bm25Score + totalQuoteBonus, query.pathBoost);
+
+				lexicalRawScores.set(id, bm25Score);
+				lexicalQuoteBonuses.set(id, {
+					bonus: totalQuoteBonus,
+					matched: quoteResult.matchedQuotes,
+				});
+				lexicalPathBoosts.set(id, {
+					multiplier: pathBoostResult.multiplier,
+					reason: pathBoostResult.reason,
+				});
+
+				const finalScore = pathBoostResult.boostedScore;
+				if (finalScore > 0) {
+					entries.push({ id, score: finalScore });
 				}
 			}
 
@@ -178,18 +247,90 @@ export class SearchIndex {
 
 		const semantic = await this.semanticRank(query.text, candidates, limit * 5, provider);
 
-		if (semantic.length === 0) return this.materialize(lexical, limit, ["lexical"]);
+		let hits: SearchHit[];
 
-		const fused = rrf([lexical, semantic], limit);
-		const lexicalIds = new Set(lexical.map((r) => r.id));
-		const semanticIds = new Set(semantic.map((r) => r.id));
+		if (semantic.length === 0) {
+			hits = this.materialize(lexical, limit, ["lexical"]);
+		} else {
+			const fused = rrf([lexical, semantic], limit);
+			const lexicalIds = new Set(lexical.map((r) => r.id));
+			const semanticIds = new Set(semantic.map((r) => r.id));
 
-		return fused.map((entry) => {
-			const via: ("lexical" | "semantic")[] = [];
-			if (lexicalIds.has(entry.id)) via.push("lexical");
-			if (semanticIds.has(entry.id)) via.push("semantic");
-			return this.hit(entry, via);
-		});
+			hits = fused.map((entry) => {
+				const via: ("lexical" | "semantic")[] = [];
+				if (lexicalIds.has(entry.id)) via.push("lexical");
+				if (semanticIds.has(entry.id)) via.push("semantic");
+				return this.hit(entry, via);
+			});
+		}
+
+		// Optional RRF & BM25 ranking explanation
+		if (query.explain) {
+			const lexicalRankMap = new Map<number, number>();
+			for (let i = 0; i < lexical.length; i++) {
+				const r = lexical[i];
+				if (r) lexicalRankMap.set(r.id, i);
+			}
+
+			const semanticRankMap = new Map<number, number>();
+			for (let i = 0; i < semantic.length; i++) {
+				const r = semantic[i];
+				if (r) semanticRankMap.set(r.id, i);
+			}
+
+			for (let i = 0; i < hits.length; i++) {
+				const hit = hits[i];
+				if (!hit) continue;
+
+				// Find original chunk id for this hit
+				const chunkId = this.data.chunks.findIndex(
+					(c) => c.line === hit.line && c.heading === hit.heading,
+				);
+
+				const rawBm25 = chunkId >= 0 ? lexicalRawScores.get(chunkId) ?? 0 : hit.score;
+				const quoteInfo = chunkId >= 0 ? lexicalQuoteBonuses.get(chunkId) : undefined;
+				const boostInfo = chunkId >= 0 ? lexicalPathBoosts.get(chunkId) : undefined;
+
+				const termsBreakdown: TermScoreContribution[] = [];
+				if (chunkId >= 0) {
+					const explained = this.optimizedLexicon.explainDocument(terms, chunkId);
+					for (const item of explained.terms) {
+						if (item.score > 0) {
+							termsBreakdown.push({
+								term: item.term,
+								tf: item.tf,
+								idf: item.idf,
+								norm: item.norm,
+								contribution: item.score,
+							});
+						}
+					}
+				}
+
+				const lexRank = chunkId >= 0 ? lexicalRankMap.get(chunkId) : undefined;
+				const semRank = chunkId >= 0 ? semanticRankMap.get(chunkId) : undefined;
+				const semScore = semRank !== undefined ? semantic[semRank]?.score : undefined;
+
+				hit.explanation = buildScoreExplanation({
+					hit,
+					rawBm25,
+					terms: termsBreakdown,
+					quoteBonus: quoteInfo?.bonus ?? 0,
+					matchedQuotes: quoteInfo?.matched ?? [],
+					pathMultiplier: boostInfo?.multiplier ?? 1.0,
+					pathReason: boostInfo?.reason ?? "Standard scoring",
+					lexicalRank: lexRank,
+					semanticRank: semRank,
+					cosineSimilarity: semScore,
+				});
+			}
+		}
+
+		if (useCache) {
+			this.sessionCache.set(cacheKey, hits);
+		}
+
+		return hits;
 	}
 
 	private async semanticRank(
