@@ -1,11 +1,32 @@
 import { describe, expect, it } from "vitest";
-import { analyze, Lexicon, phraseBonus, rrf, splitIdentifier, topN } from "../src/index.ts";
+import { analyze, Lexicon, phraseBonus, rrf, splitIdentifier, stem, topN } from "../src/index.ts";
 
 /**
  * The tokenizer decides what search can possibly find. Indexing and querying
  * both run through `analyze`, so these assertions pin down the contract both
  * sides rely on.
  */
+
+describe("stemming", () => {
+	it("stems connecting, connection, and connect to connect", () => {
+		expect(stem("connecting")).toBe("connect");
+		expect(stem("connection")).toBe("connect");
+		expect(stem("connect")).toBe("connect");
+	});
+
+	it("stems plurals and common inflections", () => {
+		expect(stem("retries")).toBe("retry");
+		expect(stem("queries")).toBe("query");
+		expect(stem("cats")).toBe("cat");
+		expect(stem("searches")).toBe("search");
+	});
+
+	it("leaves short and non-inflected words intact", () => {
+		expect(stem("go")).toBe("go");
+		expect(stem("run")).toBe("run");
+		expect(stem("parse")).toBe("parse");
+	});
+});
 
 describe("identifier splitting", () => {
 	it("breaks camelCase and PascalCase", () => {
@@ -59,13 +80,19 @@ describe("analysis", () => {
 	it("lowercases and strips punctuation", () => {
 		expect(analyze("Search(query, limit);")).toEqual(["search", "query", "limit"]);
 	});
+
+	it("stems inflections to a common base token", () => {
+		expect(analyze("connecting")).toEqual(["connect"]);
+		expect(analyze("connection")).toEqual(["connect"]);
+		expect(analyze("connected")).toEqual(["connect"]);
+	});
 });
 
 describe("bm25", () => {
 	const docs = [
 		analyze("the cat sat on the mat"),
 		analyze("a dog sat on a log"),
-		analyze("cats and dogs living together"),
+		analyze("birds and dogs living together"),
 	];
 	const lexicon = new Lexicon(docs);
 
@@ -74,14 +101,20 @@ describe("bm25", () => {
 		expect(lexicon.averageLength).toBeGreaterThan(0);
 	});
 
+	it("builds an inverted index mapping terms to postings", () => {
+		const catPostings = lexicon.postings("cat");
+		expect(catPostings).toEqual([{ docId: 0, tf: 1 }]);
+	});
+
 	it("gives a rare term more weight than a common one", () => {
 		expect(lexicon.idf("cat")).toBeGreaterThan(lexicon.idf("sat"));
 	});
 
 	it("scores a matching document above a non-matching one", () => {
 		const query = analyze("cat");
-		expect(lexicon.score(query, docs[0] as string[])).toBeGreaterThan(0);
-		expect(lexicon.score(query, docs[1] as string[])).toBe(0);
+		const scores = lexicon.score(query);
+		expect(scores.get(0) ?? 0).toBeGreaterThan(0);
+		expect(scores.get(1) ?? 0).toBe(0);
 	});
 
 	it("never returns a negative idf, even for a term in every document", () => {
@@ -90,7 +123,8 @@ describe("bm25", () => {
 	});
 
 	it("scores an empty document as zero rather than dividing by zero", () => {
-		expect(lexicon.score(analyze("cat"), [])).toBe(0);
+		const empty = new Lexicon([[]]);
+		expect(empty.score(analyze("cat")).get(0) ?? 0).toBe(0);
 	});
 });
 

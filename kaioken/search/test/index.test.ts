@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { buildIndex, writeIndexArtifact } from "@kaioken/index";
 import { scan, writeScanArtifact } from "@kaioken/scan";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as corpusMod from "../src/corpus.ts";
 import { type EmbeddingProvider, SearchIndex, splitMarkdown } from "../src/index.ts";
 
 const roots: string[] = [];
@@ -82,6 +83,16 @@ describe("corpus", () => {
 		const index = await SearchIndex.open(root);
 		expect(await index.search({ text: "wiki", kinds: ["wiki"] })).toEqual([]);
 		expect((await index.search({ text: "wiki", kinds: ["symbol"] })).length).toBeGreaterThan(0);
+	});
+
+	it("matches inflected variants through stemming (connecting -> connection)", async () => {
+		const root = await repo({
+			"src/connect.ts": "/** Manages connection pooling for the client. */\nexport function connect(): void {}\n",
+		});
+		const index = await SearchIndex.open(root);
+		const hits = await index.search({ text: "connecting" });
+		expect(hits.length).toBeGreaterThan(0);
+		expect(hits[0]?.heading).toContain("connect");
 	});
 });
 
@@ -233,6 +244,29 @@ describe("rebuild detection", () => {
 		const second = await SearchIndex.open(root);
 		expect(second.fingerprint).not.toBe(first.fingerprint);
 		expect((await second.search({ text: "addedLater" })).length).toBeGreaterThan(0);
+	});
+
+	it("collects the corpus only once during open() when the index is stale", async () => {
+		const root = await repo(SOURCE);
+		await SearchIndex.open(root);
+
+		await writeFile(
+			join(root, "src/wiki.ts"),
+			`${SOURCE["src/wiki.ts"]}\nexport function staleCheck(): void {}\n`,
+			"utf8",
+		);
+		const scanned = await scan(root);
+		await writeScanArtifact(root, scanned);
+		const { index } = await buildIndex(scanned);
+		await writeIndexArtifact(root, index);
+
+		const spy = vi.spyOn(corpusMod, "collect");
+		try {
+			await SearchIndex.open(root);
+			expect(spy).toHaveBeenCalledTimes(1);
+		} finally {
+			spy.mockRestore();
+		}
 	});
 });
 

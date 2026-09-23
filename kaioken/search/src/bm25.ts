@@ -13,9 +13,15 @@ export interface Ranked {
 	score: number;
 }
 
-/** The collection statistics BM25 needs, computed once per index build. */
+export interface Posting {
+	docId: number;
+	tf: number;
+}
+
+/** The collection statistics and inverted index BM25 needs, computed once per index build. */
 export class Lexicon {
-	private readonly df = new Map<string, number>();
+	private readonly postingsMap = new Map<string, Posting[]>();
+	private readonly docNorms: number[];
 	private readonly avgLen: number;
 	private readonly n: number;
 
@@ -25,14 +31,35 @@ export class Lexicon {
 	 */
 	constructor(documents: readonly (readonly string[])[]) {
 		this.n = documents.length;
+		this.docNorms = new Array(this.n);
 		let total = 0;
-		for (const tokens of documents) {
+
+		for (let docId = 0; docId < this.n; docId++) {
+			const tokens = documents[docId] as readonly string[];
 			total += tokens.length;
-			for (const term of new Set(tokens)) {
-				this.df.set(term, (this.df.get(term) ?? 0) + 1);
+
+			const tf = new Map<string, number>();
+			for (const token of tokens) {
+				tf.set(token, (tf.get(token) ?? 0) + 1);
+			}
+
+			for (const [term, freq] of tf) {
+				let list = this.postingsMap.get(term);
+				if (!list) {
+					list = [];
+					this.postingsMap.set(term, list);
+				}
+				list.push({ docId, tf: freq });
 			}
 		}
+
 		this.avgLen = this.n === 0 ? 0 : total / this.n;
+
+		for (let docId = 0; docId < this.n; docId++) {
+			const len = (documents[docId] as readonly string[]).length;
+			this.docNorms[docId] =
+				this.avgLen === 0 ? 0 : K1 * (1 - B + (B * len) / this.avgLen);
+		}
 	}
 
 	get documentCount(): number {
@@ -43,28 +70,40 @@ export class Lexicon {
 		return this.avgLen;
 	}
 
+	postings(term: string): readonly Posting[] {
+		return this.postingsMap.get(term) ?? [];
+	}
+
 	/** Probabilistic IDF, floored at zero so a term in every document cannot subtract. */
 	idf(term: string): number {
-		const df = this.df.get(term) ?? 0;
+		const df = this.postingsMap.get(term)?.length ?? 0;
 		if (df === 0) return 0;
 		return Math.max(0, Math.log(1 + (this.n - df + 0.5) / (df + 0.5)));
 	}
 
-	score(queryTerms: readonly string[], docTokens: readonly string[]): number {
-		if (docTokens.length === 0 || this.avgLen === 0) return 0;
+	/**
+	 * Score query terms against all documents using the inverted index.
+	 * Only documents containing at least one query term are scored.
+	 */
+	score(queryTerms: readonly string[]): Map<number, number> {
+		const scores = new Map<number, number>();
+		if (this.avgLen === 0) return scores;
 
-		const tf = new Map<string, number>();
-		for (const token of docTokens) tf.set(token, (tf.get(token) ?? 0) + 1);
-
-		const norm = K1 * (1 - B + (B * docTokens.length) / this.avgLen);
-
-		let score = 0;
 		for (const term of queryTerms) {
-			const f = tf.get(term);
-			if (!f) continue;
-			score += this.idf(term) * ((f * (K1 + 1)) / (f + norm));
+			const list = this.postingsMap.get(term);
+			if (!list) continue;
+
+			const idf = this.idf(term);
+			if (idf <= 0) continue;
+
+			for (const { docId, tf } of list) {
+				const norm = this.docNorms[docId] as number;
+				const termScore = idf * ((tf * (K1 + 1)) / (tf + norm));
+				scores.set(docId, (scores.get(docId) ?? 0) + termScore);
+			}
 		}
-		return score;
+
+		return scores;
 	}
 }
 

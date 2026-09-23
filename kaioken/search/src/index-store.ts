@@ -53,25 +53,28 @@ export interface EmbeddingProvider {
 }
 
 export class SearchIndex {
-	private readonly tokens: string[][];
 	private readonly lexicon: Lexicon;
 
 	private readonly data: PersistedIndex;
 
 	private constructor(data: PersistedIndex) {
 		this.data = data;
-		this.tokens = data.chunks.map((chunk) => analyze(`${chunk.heading}\n${chunk.text}`));
-		this.lexicon = new Lexicon(this.tokens);
+		const tokens = data.chunks.map((chunk) => analyze(`${chunk.heading}\n${chunk.text}`));
+		this.lexicon = new Lexicon(tokens);
 	}
 
-	static async build(root: string, provider?: EmbeddingProvider): Promise<SearchIndex> {
-		const corpus = await collect(root);
+	static async build(
+		root: string,
+		provider?: EmbeddingProvider,
+		corpus?: Corpus,
+	): Promise<SearchIndex> {
+		const resolvedCorpus = corpus ?? (await collect(root));
 		const data: PersistedIndex = {
 			version: 1,
 			builtAt: new Date().toISOString(),
-			fingerprint: corpus.fingerprint,
-			docs: corpus.docs,
-			chunks: corpus.chunks,
+			fingerprint: resolvedCorpus.fingerprint,
+			docs: resolvedCorpus.docs,
+			chunks: resolvedCorpus.chunks,
 		};
 
 		const index = new SearchIndex(data);
@@ -84,14 +87,15 @@ export class SearchIndex {
 	 * index silently would make search quietly wrong, which is worse than slow.
 	 */
 	static async open(root: string, options: { force?: boolean } = {}): Promise<SearchIndex> {
+		let collected: Corpus | undefined;
 		if (!options.force) {
 			const existing = await SearchIndex.load(root);
 			if (existing) {
-				const current = await collect(root);
-				if (current.fingerprint === existing.fingerprint) return existing;
+				collected = await collect(root);
+				if (collected.fingerprint === existing.fingerprint) return existing;
 			}
 		}
-		const built = await SearchIndex.build(root);
+		const built = await SearchIndex.build(root, undefined, collected);
 		await built.save(root);
 		return built;
 	}
@@ -154,20 +158,23 @@ export class SearchIndex {
 		// ranking, not to abandon the search: the semantic layer embeds the raw
 		// query and never sees the analyzer, so returning early here silently
 		// disabled the half of hybrid search that could still answer.
-		const lexical =
-			terms.length === 0
-				? []
-				: topN(
-						candidates.map((id) => ({
-							id,
-							score:
-								this.lexicon.score(terms, this.tokens[id] as string[]) +
-								phraseBonus(query.text, (this.data.chunks[id] as Chunk).text),
-						})),
-						// Fuse over a deeper slice than we return, so a result ranked
-						// modestly by both signals can still surface.
-						limit * 5,
-					).filter((r) => r.score > 0);
+		let lexical: Ranked[] = [];
+		if (terms.length > 0) {
+			const candidateSet =
+				candidates.length === this.data.chunks.length ? null : new Set(candidates);
+			const bm25Scores = this.lexicon.score(terms);
+			const entries: Ranked[] = [];
+
+			for (const [id, bm25Score] of bm25Scores) {
+				if (candidateSet && !candidateSet.has(id)) continue;
+				const score = bm25Score + phraseBonus(query.text, (this.data.chunks[id] as Chunk).text);
+				if (score > 0) {
+					entries.push({ id, score });
+				}
+			}
+
+			lexical = topN(entries, limit * 5);
+		}
 
 		const semantic = await this.semanticRank(query.text, candidates, limit * 5, provider);
 
