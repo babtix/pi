@@ -63,11 +63,11 @@
 ### Step 6: Category 19 — GitOps, Worktree Delegation & Safe Merges
 *Rank: #6 Autonomous Agent Safety | Package: `kaioken/gitops` | Features: `#UX-1801` – `#UX-1900`*  
 📄 **Plan Reference**: [`19-gitops-worktree-delegation-safe-merges.md`](categories/19-gitops-worktree-delegation-safe-merges.md)
-- [ ] **6.1** Build one-command isolated git worktree creator for scratch/agent task branches (`UX-1801`–`UX-1810`)
-- [ ] **6.2** Deploy fast-forward merge verification gate enforcing passing test runs before landing (`UX-1811`–`UX-1820`)
-- [ ] **6.3** Implement dirty working tree auto-stash guard preventing accidental file overwrites (`UX-1821`–`UX-1830`)
-- [ ] **6.4** Build visual merge conflict warning card and terminal 3-way diff view (`UX-1831`–`UX-1840`)
-- [ ] **6.5** Add interactive worktree cleanup wizard pruning stale scratch directories (`UX-1841`–`UX-1850`)
+- [x] **6.1** Build one-command isolated git worktree creator for scratch/agent task branches (`UX-1801`–`UX-1810`)
+- [x] **6.2** Deploy fast-forward merge verification gate enforcing passing test runs before landing (`UX-1811`–`UX-1820`)
+- [x] **6.3** Implement dirty working tree auto-stash guard preventing accidental file overwrites (`UX-1821`–`UX-1830`)
+- [x] **6.4** Build visual merge conflict warning card and terminal 3-way diff view (`UX-1831`–`UX-1840`)
+- [x] **6.5** Add interactive worktree cleanup wizard pruning stale scratch directories (`UX-1841`–`UX-1850`)
 
 ---
 

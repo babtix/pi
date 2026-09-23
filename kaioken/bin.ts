@@ -3,7 +3,22 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { formatReport, runEval } from "./evals/src/index.ts";
-import { hookStatus, installPostCommit, readDiff, removePostCommit, worktreeStatus } from "./gitops/src/index.ts";
+import {
+	detectConflicts,
+	formatDelegationRecipe,
+	generateDelegationRecipe,
+	getThreeWayDiff,
+	hookStatus,
+	installPostCommit,
+	listWorktrees,
+	pruneWorktrees,
+	readDiff,
+	readHookLog,
+	removePostCommit,
+	renderConflictCard,
+	safeMerge,
+	worktreeStatus,
+} from "./gitops/src/index.ts";
 import { buildGraph, graphStats, renderGraphJson, renderGraphMarkdown, renderGraphMermaid, writeGraph } from "./graph/src/index.ts";
 import { predictImpactForSymbol, renderImpact } from "./impact/src/index.ts";
 import { buildIndex, readIndexArtifact, SymbolOracle, writeIndexArtifact } from "./index/src/index.ts";
@@ -54,7 +69,7 @@ Command Options:
             --host <str>         Host to bind server to (default: 127.0.0.1)
   graph:    --format <fmt>       Output format: mermaid | markdown | json | summary
             --write              Write graph to .kaioken/graph.json
-  gitops:   --action <act>       Action: status | diff | install-hook | remove-hook
+  gitops:   --action <act>       Action: status | list | delegate | merge | prune | conflict | diff | install-hook | remove-hook | hook-log
   evals:    --repo <path>        Target repository for evaluations
 `);
 }
@@ -381,25 +396,70 @@ async function main(): Promise<void> {
 		case "gitops": {
 			const action = String(values.action ?? args[0] ?? "status").toLowerCase();
 			if (action === "install-hook") {
-				const res = await installPostCommit(root);
-				if (isJson) console.log(JSON.stringify(res, null, 2));
-				else console.log(`Installed post-commit hook: ${res.installed ? "yes" : "no"} (${res.path})`);
+				const exe = [process.execPath, process.argv[1]];
+				const path = await installPostCommit(root, exe);
+				if (isJson) console.log(JSON.stringify({ installed: true, path }, null, 2));
+				else console.log(`Installed post-commit hook: ${path}`);
 			} else if (action === "remove-hook") {
-				const res = await removePostCommit(root);
-				if (isJson) console.log(JSON.stringify(res, null, 2));
-				else console.log(`Removed post-commit hook: ${res.removed ? "yes" : "no"} (${res.path})`);
+				const removed = await removePostCommit(root);
+				if (isJson) console.log(JSON.stringify({ removed }, null, 2));
+				else console.log(`Removed post-commit hook: ${removed ? "yes" : "no hook was present"}`);
+			} else if (action === "hook-log") {
+				const logText = await readHookLog(root);
+				console.log(logText);
 			} else if (action === "diff") {
 				const diff = await readDiff(root);
 				if (isJson) console.log(JSON.stringify(diff, null, 2));
-				else console.log(diff.diffText || "Working tree clean.");
+				else console.log(diff ? diff.patch || "Working tree clean." : "Not a git repository.");
+			} else if (action === "list") {
+				const wts = await listWorktrees(root);
+				if (isJson) console.log(JSON.stringify(wts, null, 2));
+				else {
+					console.log(`Registered worktrees (${wts.length}):`);
+					for (const wt of wts) {
+						console.log(`  • ${wt.branch || "(detached)"} at ${wt.path} [${wt.isKaioken ? "kaioken" : "base"}]`);
+					}
+				}
+			} else if (action === "delegate" || action === "create") {
+				const taskName = args[1] || "scratch-task";
+				const recipe = await generateDelegationRecipe(root, taskName);
+				if (isJson) console.log(JSON.stringify(recipe, null, 2));
+				else console.log(formatDelegationRecipe(recipe));
+			} else if (action === "merge") {
+				const taskName = args[1] || "scratch-task";
+				const res = await safeMerge(root, taskName);
+				if (isJson) console.log(JSON.stringify(res, null, 2));
+				else console.log(res.message);
+				if (!res.success) process.exit(1);
+			} else if (action === "cleanup" || action === "prune") {
+				const report = await pruneWorktrees(root);
+				if (isJson) console.log(JSON.stringify(report, null, 2));
+				else {
+					console.log(`Pruned ${report.prunedWorktrees.length} worktree(s), ${report.prunedBranches.length} branch(es).`);
+					for (const p of report.prunedWorktrees) {
+						console.log(`  - ${p.name}: ${p.reason}`);
+					}
+				}
+			} else if (action === "conflict" || action === "diff3") {
+				const filePath = args[1];
+				if (filePath) {
+					const diff3 = await getThreeWayDiff(root, filePath);
+					console.log(diff3.files[0]?.formattedDiff || diff3.summary);
+				} else {
+					const conflictInfo = await detectConflicts(root);
+					if (isJson) console.log(JSON.stringify(conflictInfo, null, 2));
+					else if (conflictInfo.hasConflicts) console.log(renderConflictCard(conflictInfo));
+					else console.log("No merge conflicts detected.");
+				}
 			} else {
 				const hook = await hookStatus(root);
 				const wt = await worktreeStatus(root);
+				const wts = await listWorktrees(root);
 				if (isJson) {
-					console.log(JSON.stringify({ hook, worktree: wt }, null, 2));
+					console.log(JSON.stringify({ hook, worktree: wt, registeredWorktrees: wts }, null, 2));
 				} else {
 					console.log(
-						`Gitops Status:\n  Post-commit hook: ${hook.installed ? `installed at ${hook.path}` : "not installed"}\n  Worktrees: ${wt.worktrees.length}`,
+						`Gitops Status:\n  Post-commit hook: ${hook.installed ? `installed at ${hook.path}` : "not installed"}\n  Worktrees: ${wts.length} registered (${wt.dirty.length} dirty file(s), ${wt.conflicted.length} conflicted)`,
 					);
 				}
 			}
