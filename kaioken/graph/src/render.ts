@@ -1,4 +1,4 @@
-import type { GraphNode, KnowledgeGraph } from "./types.ts";
+import type { CytoscapeGraph, D3Graph, GraphNode, KnowledgeGraph } from "./types.ts";
 
 /**
  * Summarise the graph: what it covers and what it leaves out.
@@ -18,7 +18,9 @@ export function graphStats(
 	isolated: string[];
 	coverage: number | null;
 } {
-	const documents = graph.nodes.filter((n) => n.kind !== "skill");
+	const documents = graph.nodes.filter(
+		(n) => n.kind !== "skill" && n.kind !== "source" && n.kind !== "file",
+	);
 	const covered = new Set(
 		graph.edges.filter((e) => e.kind === "written_from").flatMap((e) => e.via),
 	);
@@ -70,7 +72,7 @@ export function renderGraphMarkdown(
 	const lines: string[] = [
 		"# Knowledge graph",
 		"",
-		`Derived from this repository's generated knowledge: ${stats.nodes} documents, ` +
+		`Derived from this repository's generated knowledge: ${stats.nodes} nodes, ` +
 			`${stats.edges} edges, ${stats.coveredFiles} source files covered.` +
 			(stats.coverage !== null
 				? ` ${(stats.coverage * 100).toFixed(0)}% of scanned files are described.`
@@ -144,6 +146,10 @@ function kindLabel(kind: GraphNode["kind"], count: number): string {
 			return `Cards (${count})`;
 		case "skill":
 			return `Skills (${count})`;
+		case "source":
+			return `Sources (${count})`;
+		case "file":
+			return `Files (${count})`;
 	}
 }
 
@@ -156,4 +162,149 @@ function groupBy<T>(items: readonly T[], key: (item: T) => string): Map<string, 
 		out.set(k, list);
 	}
 	return out;
+}
+
+export interface MermaidOptions {
+	direction?: "TD" | "LR";
+	includeEdgeLabels?: boolean;
+}
+
+/**
+ * Render a Mermaid flowchart with subgraph clustering by directory or module.
+ * Subgraph clustering organizes nodes into directory/module boundaries so large
+ * graphs (40+ nodes) remain navigable and legible.
+ */
+export function renderGraphMermaid(
+	graph: KnowledgeGraph,
+	options: MermaidOptions = {},
+): string {
+	const direction = options.direction ?? "TD";
+	const lines: string[] = [`flowchart ${direction}`];
+
+	if (graph.nodes.length === 0) return lines.join("\n");
+
+	const idMap = new Map<string, string>();
+	for (let i = 0; i < graph.nodes.length; i++) {
+		const node = graph.nodes[i] as GraphNode;
+		idMap.set(node.id, `node_${i}`);
+	}
+
+	const clusters = new Map<string, GraphNode[]>();
+	for (const node of graph.nodes) {
+		const key = clusterKeyForNode(node);
+		const list = clusters.get(key) ?? [];
+		list.push(node);
+		clusters.set(key, list);
+	}
+
+	let clusterIndex = 0;
+	for (const [clusterName, nodes] of [...clusters.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+		const subId = `subgraph_${clusterIndex++}`;
+		lines.push(`  subgraph ${subId} ["${escapeMermaid(clusterName)}"]`);
+		for (const node of nodes) {
+			const safeId = idMap.get(node.id) as string;
+			const label = escapeMermaid(node.title || node.id);
+			lines.push(`    ${safeId}["${label}"]`);
+		}
+		lines.push("  end");
+	}
+
+	const includeLabels = options.includeEdgeLabels ?? true;
+	for (const edge of graph.edges) {
+		const fromId = idMap.get(edge.from);
+		const toId = idMap.get(edge.to);
+		if (!fromId || !toId) continue;
+
+		if (includeLabels && edge.kind) {
+			lines.push(`  ${fromId} -->|${edge.kind}| ${toId}`);
+		} else {
+			lines.push(`  ${fromId} --> ${toId}`);
+		}
+	}
+
+	return lines.join("\n");
+}
+
+export const renderMermaid = renderGraphMermaid;
+
+/**
+ * Convert knowledge graph into D3-compatible node-link format.
+ */
+export function toD3Graph(graph: KnowledgeGraph): D3Graph {
+	return {
+		nodes: graph.nodes.map((n) => ({
+			id: n.id,
+			title: n.title,
+			kind: n.kind,
+			...(n.path ? { path: n.path } : {}),
+		})),
+		links: graph.edges.map((e) => ({
+			source: e.from,
+			target: e.to,
+			kind: e.kind,
+			via: e.via,
+		})),
+	};
+}
+
+/**
+ * Convert knowledge graph into Cytoscape.js elements format.
+ */
+export function toCytoscapeGraph(graph: KnowledgeGraph): CytoscapeGraph {
+	return {
+		elements: {
+			nodes: graph.nodes.map((n) => ({
+				data: {
+					id: n.id,
+					label: n.title,
+					kind: n.kind,
+					...(n.path ? { path: n.path } : {}),
+				},
+			})),
+			edges: graph.edges.map((e, index) => ({
+				data: {
+					id: `e_${index}`,
+					source: e.from,
+					target: e.to,
+					kind: e.kind,
+					via: e.via,
+				},
+			})),
+		},
+	};
+}
+
+/**
+ * Export graph as formatted JSON string for D3 or Cytoscape.
+ */
+export function exportGraphJson(
+	graph: KnowledgeGraph,
+	format: "d3" | "cytoscape" = "d3",
+): string {
+	const data = format === "cytoscape" ? toCytoscapeGraph(graph) : toD3Graph(graph);
+	return `${JSON.stringify(data, null, 2)}\n`;
+}
+
+export const renderGraphJson = exportGraphJson;
+
+function clusterKeyForNode(node: GraphNode): string {
+	if (node.kind === "card" || node.id.startsWith("card:")) return "cards";
+	if (node.kind === "skill" || node.id.startsWith("skill:")) return "skills";
+	if (node.path) {
+		const norm = node.path.replace(/\\/g, "/");
+		const lastSlash = norm.lastIndexOf("/");
+		if (lastSlash !== -1) {
+			return norm.slice(0, lastSlash);
+		}
+		return "(root)";
+	}
+	const lastSlash = node.id.lastIndexOf("/");
+	if (lastSlash !== -1) {
+		return node.id.slice(0, lastSlash);
+	}
+	return "(root)";
+}
+
+function escapeMermaid(text: string): string {
+	return text.replace(/["#;[\]]/g, " ").trim();
 }

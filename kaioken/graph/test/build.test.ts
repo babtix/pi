@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildGraph, nodeKindFor, splitDocumentId } from "../src/build.ts";
+import { assertGraphIntegrity, buildCodeGraph, buildGraph, nodeKindFor, splitDocumentId } from "../src/build.ts";
 import type { Provenance } from "@kaioken/provenance";
 
 function record(
@@ -122,6 +122,23 @@ describe("buildGraph", () => {
 
 		expect(graph.nodes[0]).toMatchObject({ title: "Retrieval", path: "core/retrieval.md" });
 	});
+
+	it("registers every source.path as a node so written_from edges never dangle", () => {
+		const graph = buildGraph({
+			provenance: [
+				record("card:scan", ["packages/scan/src/scan.ts", "packages/scan/src/ignore.ts"]),
+			],
+		});
+
+		const nodeIds = new Set(graph.nodes.map((n) => n.id));
+		for (const edge of graph.edges) {
+			expect(nodeIds.has(edge.from)).toBe(true);
+			expect(nodeIds.has(edge.to)).toBe(true);
+		}
+		expect(graph.nodes.some((n) => n.id === "packages/scan/src/scan.ts" && n.kind === "source")).toBe(true);
+		expect(graph.nodes.some((n) => n.id === "packages/scan/src/ignore.ts" && n.kind === "source")).toBe(true);
+		expect(() => assertGraphIntegrity(graph)).not.toThrow();
+	});
 });
 
 describe("reference edges", () => {
@@ -144,3 +161,109 @@ describe("reference edges", () => {
 		expect(refs[0]?.via).toEqual(["src/three.ts", "src/two.ts"]);
 	});
 });
+
+describe("buildCodeGraph", () => {
+	it("builds file import dependency edges between modules", () => {
+		const graph = buildCodeGraph({
+			files: [
+				{ path: "src/index.ts", imports: ["./build.ts", "./render.ts"] },
+				{ path: "src/build.ts", imports: ["./types.ts"] },
+				{ path: "src/render.ts", imports: ["./types.ts"] },
+				{ path: "src/types.ts", imports: [] },
+			],
+		});
+
+		expect(graph.nodes).toHaveLength(4);
+		expect(graph.nodes.map((n) => n.id)).toEqual([
+			"src/build.ts",
+			"src/index.ts",
+			"src/render.ts",
+			"src/types.ts",
+		]);
+
+		const indexEdges = graph.edges.filter((e) => e.from === "src/index.ts");
+		expect(indexEdges).toHaveLength(2);
+		expect(indexEdges.map((e) => e.to)).toEqual(["src/build.ts", "src/render.ts"]);
+
+		const buildEdges = graph.edges.filter((e) => e.from === "src/build.ts");
+		expect(buildEdges).toHaveLength(1);
+		expect(buildEdges[0]?.to).toBe("src/types.ts");
+
+		expect(() => assertGraphIntegrity(graph)).not.toThrow();
+	});
+
+	it("resolves relative import specifiers and re-exports", () => {
+		const graph = buildCodeGraph({
+			files: [
+				{
+					path: "src/index.ts",
+					reexports: [{ from: "./components/button.ts", name: "Button" }],
+				},
+				{
+					path: "src/components/button.ts",
+					imports: ["../utils/theme.ts"],
+				},
+				{
+					path: "src/utils/theme.ts",
+				},
+			],
+		});
+
+		expect(graph.edges).toHaveLength(2);
+		expect(graph.edges[0]).toMatchObject({
+			from: "src/components/button.ts",
+			to: "src/utils/theme.ts",
+			kind: "imports",
+		});
+		expect(graph.edges[1]).toMatchObject({
+			from: "src/index.ts",
+			to: "src/components/button.ts",
+			kind: "reexports",
+		});
+	});
+
+	it("handles imports from index artifacts (IndexResult.files)", () => {
+		const graph = buildCodeGraph({
+			index: {
+				files: [
+					{
+						path: "packages/core/src/index.ts",
+						reexports: [{ from: "./engine.ts", name: "Engine" }],
+					},
+					{
+						path: "packages/core/src/engine.ts",
+						reexports: [],
+					},
+				],
+			},
+		});
+
+		expect(graph.nodes).toHaveLength(2);
+		expect(graph.edges).toHaveLength(1);
+		expect(graph.edges[0]).toMatchObject({
+			from: "packages/core/src/index.ts",
+			to: "packages/core/src/engine.ts",
+			kind: "reexports",
+		});
+	});
+
+	it("extracts imports from raw source code if provided", () => {
+		const graph = buildCodeGraph({
+			files: [
+				{
+					path: "src/app.ts",
+					content: 'import { run } from "./runner.ts";\nexport const v = 1;',
+				},
+				{
+					path: "src/runner.ts",
+					content: "export function run() {}",
+				},
+			],
+		});
+
+		expect(graph.edges).toHaveLength(1);
+		expect(graph.edges[0]?.from).toBe("src/app.ts");
+		expect(graph.edges[0]?.to).toBe("src/runner.ts");
+	});
+});
+

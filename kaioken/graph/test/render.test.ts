@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { buildGraph } from "../src/build.ts";
-import { graphStats, renderGraphMarkdown } from "../src/render.ts";
+import {
+	exportGraphJson,
+	graphStats,
+	renderGraphMarkdown,
+	renderGraphMermaid,
+	toCytoscapeGraph,
+	toD3Graph,
+} from "../src/render.ts";
 import type { Provenance } from "@kaioken/provenance";
 
 function record(document: string, sources: string[]): Provenance {
@@ -32,7 +39,7 @@ describe("graphStats", () => {
 			],
 		});
 
-		expect(stats.nodes).toBe(4); // 3 documents + 1 skill
+		expect(stats.nodes).toBe(7); // 3 documents + 1 skill + 3 source files
 		expect(stats.coveredFiles).toBe(3);
 		expect(stats.uncoveredFiles).toBe(1);
 		// Every document here shares ground with another (scan.ts is common),
@@ -60,7 +67,7 @@ describe("renderGraphMarkdown", () => {
 	const text = renderGraphMarkdown(graph, graphStats(graph));
 
 	it("states the scale and coverage up front", () => {
-		expect(text).toContain("4 documents");
+		expect(text).toContain("7 nodes");
 		expect(text).toContain("3 source files covered");
 	});
 
@@ -117,3 +124,56 @@ describe("node rendering", () => {
 		expect(markdown).not.toContain("architecture/index.md (architecture/index.md)");
 	});
 });
+
+describe("renderGraphMermaid", () => {
+	it("renders Mermaid flowchart with subgraph clustering by directory/module", () => {
+		const mermaid = renderGraphMermaid(graph);
+		expect(mermaid).toContain("flowchart TD");
+		expect(mermaid).toContain("subgraph ");
+		expect(mermaid).toContain('["packages/scan/src"]');
+		expect(mermaid).toContain('["core"]');
+		expect(mermaid).toContain('["cards"]');
+		expect(mermaid).toContain('["skills"]');
+		expect(mermaid).toContain("-->|written_from|");
+	});
+
+	it("supports custom direction and renders empty graph safely", () => {
+		const empty = renderGraphMermaid({ version: 1, generatedAt: "t", nodes: [], edges: [] }, { direction: "LR" });
+		expect(empty).toBe("flowchart LR");
+	});
+});
+
+describe("JSON export for D3 and Cytoscape", () => {
+	it("converts knowledge graph to D3 node-link format", () => {
+		const d3 = toD3Graph(graph);
+		expect(d3.nodes.length).toBe(graph.nodes.length);
+		expect(d3.links.length).toBe(graph.edges.length);
+		expect(d3.links[0]).toHaveProperty("source");
+		expect(d3.links[0]).toHaveProperty("target");
+		expect(d3.links[0]).toHaveProperty("kind");
+	});
+
+	it("converts knowledge graph to Cytoscape elements format", () => {
+		const cy = toCytoscapeGraph(graph);
+		expect(cy.elements.nodes.length).toBe(graph.nodes.length);
+		expect(cy.elements.edges.length).toBe(graph.edges.length);
+		expect(cy.elements.nodes[0]?.data).toHaveProperty("id");
+		expect(cy.elements.nodes[0]?.data).toHaveProperty("label");
+		expect(cy.elements.edges[0]?.data).toHaveProperty("source");
+		expect(cy.elements.edges[0]?.data).toHaveProperty("target");
+	});
+
+	it("exports formatted JSON strings for both formats", () => {
+		const d3Json = exportGraphJson(graph, "d3");
+		const parsedD3 = JSON.parse(d3Json);
+		expect(parsedD3).toHaveProperty("nodes");
+		expect(parsedD3).toHaveProperty("links");
+
+		const cyJson = exportGraphJson(graph, "cytoscape");
+		const parsedCy = JSON.parse(cyJson);
+		expect(parsedCy).toHaveProperty("elements");
+		expect(parsedCy.elements).toHaveProperty("nodes");
+		expect(parsedCy.elements).toHaveProperty("edges");
+	});
+});
+

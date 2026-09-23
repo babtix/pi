@@ -2,8 +2,20 @@ export {
 	splitDocumentId,
 	nodeKindFor,
 	buildGraph,
+	buildCodeGraph,
+	assertGraphIntegrity,
 } from "./build.ts";
-export { graphStats, renderGraphMarkdown } from "./render.ts";
+export {
+	graphStats,
+	renderGraphMarkdown,
+	renderGraphMermaid,
+	renderMermaid,
+	toD3Graph,
+	toCytoscapeGraph,
+	exportGraphJson,
+	renderGraphJson,
+	type MermaidOptions,
+} from "./render.ts";
 export {
 	GRAPH_ARTIFACT,
 	graphPath,
@@ -17,6 +29,9 @@ export {
 	type ExportManifest,
 } from "./artifact.ts";
 export type {
+	CodeGraphInput,
+	CytoscapeGraph,
+	D3Graph,
 	EdgeKind,
 	GraphBuildInput,
 	GraphEdge,
@@ -25,3 +40,4 @@ export type {
 	KnowledgeGraph,
 	NodeKind,
 } from "./types.ts";
+

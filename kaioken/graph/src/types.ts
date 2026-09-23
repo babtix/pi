@@ -16,7 +16,7 @@
 import type { Provenance } from "@kaioken/provenance";
 
 /** Where a node in the graph came from. */
-export type NodeKind = "chapter" | "section" | "card" | "skill";
+export type NodeKind = "chapter" | "section" | "card" | "skill" | "source" | "file";
 
 export interface GraphNode {
 	/** Stable identifier: provenance document id, or skill path. */
@@ -39,7 +39,11 @@ export type EdgeKind =
 	/** Two documents draw on at least one shared source file. */
 	| "shared_source"
 	/** One document's claims name ground the other document covers. */
-	| "references";
+	| "references"
+	/** A file or module imports declarations from another file. */
+	| "imports"
+	/** A file re-exports declarations from another file. */
+	| "reexports";
 
 export interface GraphEdge {
 	from: string;
@@ -88,3 +92,41 @@ export interface GraphBuildInput {
 	scanPaths?: readonly string[];
 	generatedAt?: string;
 }
+
+export interface CodeGraphInput {
+	/** Files with their import/re-export dependency records. */
+	files?: readonly {
+		path: string;
+		imports?: readonly string[];
+		reexports?: readonly { from: string; name?: string }[];
+		content?: string;
+		source?: string;
+	}[];
+	/** Structural index artifact containing files with reexports. */
+	index?: {
+		files: readonly {
+			path: string;
+			reexports?: readonly { from: string; name?: string }[];
+		}[];
+	};
+	/** Explicit map of file path -> list of imported specifiers or paths. */
+	imports?: Readonly<Record<string, readonly string[]>>;
+	/** Complete set of repository file paths, used to resolve specifiers. */
+	scanPaths?: readonly string[];
+	generatedAt?: string;
+}
+
+/** D3 force-directed graph JSON format. */
+export interface D3Graph {
+	nodes: { id: string; title: string; kind: string; path?: string }[];
+	links: { source: string; target: string; kind: string; via: string[] }[];
+}
+
+/** Cytoscape elements JSON format. */
+export interface CytoscapeGraph {
+	elements: {
+		nodes: { data: { id: string; label: string; kind: string; path?: string } }[];
+		edges: { data: { id: string; source: string; target: string; kind: string; via: string[] } }[];
+	};
+}
+
