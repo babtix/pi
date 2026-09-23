@@ -1,4 +1,4 @@
-export type { PiAiClientOptions } from "./piai.ts";
+export type { PiAiClientOptions, RetryPolicy } from "./piai.ts";
 export { ModelUnavailableError, PiAiClient } from "./piai.ts";
 export type { Depth, ModelClient, ModelRequest } from "./port.ts";
 export {
@@ -22,6 +22,7 @@ export {
 	DEFAULT_CONTEXT_TOKENS,
 	describeSpend,
 	estimateSpend,
+	estimateStageTokens,
 	estimateTokens,
 	resolveRates,
 	STAGE_CONTEXT_TOKENS,

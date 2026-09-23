@@ -20,10 +20,13 @@ export interface ModelRequest {
 	prompt: string;
 	/** Upper bound on the reply, derived from the multiplier. */
 	maxOutputTokens?: number;
+	/** Real-time streaming callback for chunk progress. */
+	onChunk?: (chunk: string) => void;
 }
 
 export interface ModelClient {
 	complete(request: ModelRequest): Promise<string>;
+	completeStream?(request: ModelRequest, onChunk: (chunk: string) => void): Promise<string>;
 }
 
 /**

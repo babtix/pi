@@ -34,6 +34,14 @@ describe("spend: token estimation", () => {
 	it("always assumes at least one pass", () => {
 		expect(estimateTokens(1, 1_000).passes).toBeGreaterThanOrEqual(1);
 	});
+
+	it("multiplies the estimate across multiple units/cards", () => {
+		const single = estimateTokens(3, 12_000, 1);
+		const fifty = estimateTokens(3, 12_000, 50);
+		expect(fifty.input).toBe(single.input * 50);
+		expect(fifty.output).toBe(single.output * 50);
+		expect(fifty.passes).toBe(single.passes * 50);
+	});
 });
 
 describe("spend: rate selection", () => {

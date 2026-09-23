@@ -62,14 +62,28 @@ export function contextTokensFor(action: string): number {
  * decide how many repair and critique passes to run — so raising the multiplier
  * raises the estimate for the same reason it raises the work.
  */
-export function estimateTokens(multiplier: number, contextSize: number): TokenEstimate {
+export function estimateTokens(
+	multiplier: number,
+	contextSize: number,
+	itemCount = 1,
+): TokenEstimate {
 	const depth = depthFor(multiplier);
-	const passes = 1 + depth.repairPasses + depth.critiquePasses;
+	const passesPerItem = 1 + depth.repairPasses + depth.critiquePasses;
+	const count = Math.max(1, itemCount);
+	const passes = passesPerItem * count;
 	return {
 		input: Math.round(contextSize * passes),
 		output: Math.round(depth.maxOutputTokens * passes),
 		passes,
 	};
+}
+
+export function estimateStageTokens(
+	action: string,
+	multiplier: number,
+	itemCount = 1,
+): TokenEstimate {
+	return estimateTokens(multiplier, contextTokensFor(action), itemCount);
 }
 
 /**

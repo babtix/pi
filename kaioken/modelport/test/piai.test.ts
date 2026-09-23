@@ -144,4 +144,68 @@ describe("modelport: PiAiClient", () => {
 
 		expect(() => client.resolveModel()).toThrow(/lookup threw: registry offline/);
 	});
+
+	it("retries with backoff on rate-limit errors and succeeds when cleared", async () => {
+		let attempts = 0;
+		const sleeps: number[] = [];
+		const complete = vi.fn(async () => {
+			attempts++;
+			if (attempts < 3) {
+				return {
+					role: "assistant",
+					content: [],
+					api: "openai-completions",
+					provider: "antigravity",
+					model: "gemini-3.8-flash-high",
+					stopReason: "error",
+					diagnostics: [{ type: "error", timestamp: Date.now(), error: { message: "HTTP 429: Too Many Requests" } }],
+				} as any;
+			}
+			return {
+				role: "assistant",
+				content: [{ type: "text", text: "recovered after rate limit" }],
+				api: "openai-completions",
+				provider: "antigravity",
+				model: "gemini-3.8-flash-high",
+				stopReason: "stop",
+			} as any;
+		});
+
+		const models = {
+			getModel: () => fakeModel,
+			getModels: () => [fakeModel],
+			complete,
+		} as unknown as Models;
+
+		const client = new PiAiClient(models, {
+			provider: "antigravity",
+			model: "gemini-3.8-flash-high",
+			retry: {
+				maxRetries: 3,
+				initialDelayMs: 100,
+				sleep: async (ms) => { sleeps.push(ms); },
+			},
+		});
+
+		const result = await client.complete({ purpose: "wiki", system: "S", prompt: "P" });
+		expect(result).toBe("recovered after rate limit");
+		expect(attempts).toBe(3);
+		expect(sleeps.length).toBe(2);
+	});
+
+	it("calls onChunk streaming callback", async () => {
+		const { models } = stubModels({ model: fakeModel });
+		const client = new PiAiClient(models, { provider: "antigravity", model: "gemini-3.8-flash-high" });
+
+		const chunks: string[] = [];
+		const result = await client.complete({
+			purpose: "wiki",
+			system: "S",
+			prompt: "P",
+			onChunk: (chunk) => { chunks.push(chunk); },
+		});
+
+		expect(result).toBe("hello from the stub");
+		expect(chunks).toContain("hello from the stub");
+	});
 });

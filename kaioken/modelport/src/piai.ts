@@ -15,6 +15,19 @@ import type { Api, Model, Models, ThinkingLevel } from "@earendil-works/pi-ai";
 import { contentText } from "@earendil-works/pi-ai";
 import type { ModelClient, ModelRequest } from "./port.ts";
 
+export interface RetryPolicy {
+	/** Maximum number of retry attempts on rate limit or transient errors. Defaults to 3. */
+	maxRetries?: number;
+	/** Initial backoff delay in ms. Defaults to 500ms. */
+	initialDelayMs?: number;
+	/** Maximum backoff delay cap in ms. Defaults to 10,000ms. */
+	maxDelayMs?: number;
+	/** Exponential multiplier. Defaults to 2. */
+	backoffFactor?: number;
+	/** Optional sleep implementation, injectable for fast unit tests. */
+	sleep?: (ms: number) => Promise<void>;
+}
+
 export interface PiAiClientOptions {
 	/** Provider id as registered in Pi, e.g. `antigravity`. */
 	provider: string;
@@ -24,6 +37,8 @@ export interface PiAiClientOptions {
 	reasoning?: ThinkingLevel;
 	/** Sampling temperature. Omitted lets the provider default stand. */
 	temperature?: number;
+	/** Retry and backoff configuration for rate-limit and network resilience. */
+	retry?: RetryPolicy;
 }
 
 export class ModelUnavailableError extends Error {
@@ -31,6 +46,29 @@ export class ModelUnavailableError extends Error {
 		super(`model "${provider}/${model}" is unavailable: ${hint}`);
 		this.name = "ModelUnavailableError";
 	}
+}
+
+function isRetryable(msg: string): boolean {
+	const lower = msg.toLowerCase();
+	return (
+		lower.includes("429") ||
+		lower.includes("rate limit") ||
+		lower.includes("ratelimit") ||
+		lower.includes("too many requests") ||
+		lower.includes("resource_exhausted") ||
+		lower.includes("quota") ||
+		lower.includes("overloaded") ||
+		lower.includes("503") ||
+		lower.includes("502") ||
+		lower.includes("504") ||
+		lower.includes("timeout") ||
+		lower.includes("timed out") ||
+		lower.includes("etimedout") ||
+		lower.includes("econnreset") ||
+		lower.includes("econnrefused") ||
+		lower.includes("fetch failed") ||
+		lower.includes("network")
+	);
 }
 
 export class PiAiClient implements ModelClient {
@@ -68,29 +106,97 @@ export class PiAiClient implements ModelClient {
 	}
 
 	async complete(request: ModelRequest): Promise<string> {
-		const model = this.resolveModel();
-		const message = await this.models.complete(
-			model,
-			{
-				systemPrompt: request.system,
-				messages: [{ role: "user", content: request.prompt, timestamp: Date.now() }],
-			},
-			{
-				...(request.maxOutputTokens === undefined ? {} : { maxTokens: request.maxOutputTokens }),
-				...(this.options.reasoning === undefined ? {} : { reasoning: this.options.reasoning }),
-				...(this.options.temperature === undefined ? {} : { temperature: this.options.temperature }),
-			},
-		);
+		const retry = this.options.retry ?? {};
+		const maxRetries = retry.maxRetries ?? 3;
+		const initialDelay = retry.initialDelayMs ?? 500;
+		const maxDelay = retry.maxDelayMs ?? 10_000;
+		const factor = retry.backoffFactor ?? 2;
+		const sleepFn = retry.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
 
-		if (message.stopReason === "error" || message.stopReason === "aborted") {
-			const detail =
-				message.diagnostics
-					?.map((d) => d.error?.message ?? d.type)
-					.filter(Boolean)
-					.join("; ") || "no diagnostics";
-			throw new Error(`model call for stage "${request.purpose}" ended with ${message.stopReason}: ${detail}`);
+		let attempt = 0;
+		let delay = initialDelay;
+
+		while (true) {
+			attempt++;
+			try {
+				const model = this.resolveModel();
+				const context = {
+					systemPrompt: request.system,
+					messages: [{ role: "user" as const, content: request.prompt, timestamp: Date.now() }],
+				};
+				const options = {
+					...(request.maxOutputTokens === undefined ? {} : { maxTokens: request.maxOutputTokens }),
+					...(this.options.reasoning === undefined ? {} : { reasoning: this.options.reasoning }),
+					...(this.options.temperature === undefined ? {} : { temperature: this.options.temperature }),
+				};
+
+				if (request.onChunk && typeof this.models.stream === "function") {
+					const eventStream = this.models.stream(model, context, options);
+					for await (const event of eventStream) {
+						if (event.type === "text_delta" && event.delta) {
+							request.onChunk(event.delta);
+						}
+					}
+					const message = await eventStream.result();
+					if (message.stopReason === "error" || message.stopReason === "aborted") {
+						const detail =
+							message.diagnostics
+								?.map((d) => d.error?.message ?? d.type)
+								.filter(Boolean)
+								.join("; ") || "no diagnostics";
+						const err = new Error(
+							`model call for stage "${request.purpose}" ended with ${message.stopReason}: ${detail}`,
+						);
+						if (attempt <= maxRetries && isRetryable(err.message)) {
+							const jitter = Math.random() * 0.3 * delay;
+							await sleepFn(Math.min(delay + jitter, maxDelay));
+							delay *= factor;
+							continue;
+						}
+						throw err;
+					}
+					return contentText(message.content);
+				}
+
+				const message = await this.models.complete(model, context, options);
+
+				if (message.stopReason === "error" || message.stopReason === "aborted") {
+					const detail =
+						message.diagnostics
+							?.map((d) => d.error?.message ?? d.type)
+							.filter(Boolean)
+							.join("; ") || "no diagnostics";
+					const err = new Error(
+						`model call for stage "${request.purpose}" ended with ${message.stopReason}: ${detail}`,
+					);
+					if (attempt <= maxRetries && isRetryable(err.message)) {
+						const jitter = Math.random() * 0.3 * delay;
+						await sleepFn(Math.min(delay + jitter, maxDelay));
+						delay *= factor;
+						continue;
+					}
+					throw err;
+				}
+
+				const text = contentText(message.content);
+				if (request.onChunk) {
+					request.onChunk(text);
+				}
+				return text;
+			} catch (err: unknown) {
+				const errorMsg = err instanceof Error ? err.message : String(err);
+				if (attempt <= maxRetries && isRetryable(errorMsg)) {
+					const jitter = Math.random() * 0.3 * delay;
+					await sleepFn(Math.min(delay + jitter, maxDelay));
+					delay *= factor;
+					continue;
+				}
+				throw err;
+			}
 		}
+	}
 
-		return contentText(message.content);
+	async completeStream(request: ModelRequest, onChunk: (chunk: string) => void): Promise<string> {
+		return this.complete({ ...request, onChunk });
 	}
 }
