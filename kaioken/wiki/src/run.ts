@@ -40,6 +40,14 @@ export interface RunInput {
 	onDocument?: (doc: WikiDocument) => Promise<void>;
 	onFailure?: (failure: RunFailure) => void;
 	onProgress?: (label: string, done: number, total: number) => void;
+	/**
+	 * Fires when a chapter or section job starts, before its model call.
+	 *
+	 * `onProgress` only fires after a document completes, so a long model
+	 * call leaves the caller silent. A live log needs the start signal to
+	 * show what is currently in flight.
+	 */
+	onTaskStart?: (label: string) => void;
 }
 
 export interface RunOutput {
@@ -109,6 +117,7 @@ export async function runWiki(input: RunInput): Promise<RunOutput> {
 	await mapLimitSettled(chapters, limit, async (chapter) => {
 		const docPath = documentPath(chapter);
 		const wantChapterDoc = !wantedDocSet || wantedDocSet.has(docPath);
+		input.onTaskStart?.(`chapter ${chapter.id}`);
 
 		let chapterAlreadyOnDisk = false;
 		if (wantChapterDoc) {
@@ -223,6 +232,7 @@ export async function runWiki(input: RunInput): Promise<RunOutput> {
 
 	await mapLimitSettled(sectionJobs, limit, async ({ chapter, section }) => {
 		const path = documentPath(chapter, section);
+		input.onTaskStart?.(`section ${chapter.id}/${section.id}`);
 		let existingSectionBody: string | null = null;
 		if (input.resume) {
 			try {

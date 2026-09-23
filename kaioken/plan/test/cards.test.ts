@@ -267,6 +267,15 @@ describe("cards: batch generation", () => {
 		expect(seen).toEqual(["core"]);
 	});
 
+	it("signals task starts alongside progress", async () => {
+		const client = scriptedClient([draft("s", [])]);
+		const started: Array<{ id: string; index: number; total: number }> = [];
+		await generateCards(plan, index, client, {
+			onTaskStart: (id, index, total) => started.push({ id, index, total }),
+		});
+		expect(started).toEqual([{ id: "core", index: 0, total: 1 }]);
+	});
+
 	it("reuses fresh existing card in incremental mode", async () => {
 		const client = scriptedClient([draft("new core summary", [])]);
 		const existingCard = {

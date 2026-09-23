@@ -303,6 +303,13 @@ export async function generateCards(
 		knownFiles?: ReadonlyMap<string, string>;
 		onProgress?: (moduleId: string, done: number, total: number) => void;
 		/**
+		 * Fires when a card job starts, before its model call.
+		 *
+		 * `onProgress` fires at the same point today, but a live log needs an
+		 * explicit start signal distinct from completion reporting.
+		 */
+		onTaskStart?: (moduleId: string, index: number, total: number) => void;
+		/**
 		 * When true, only regenerate cards whose source files changed or are missing.
 		 */
 		incremental?: boolean;
@@ -334,6 +341,7 @@ export async function generateCards(
 	const out: CardResult[] = [];
 	for (let i = 0; i < modules.length; i++) {
 		const module = modules[i] as Module;
+		options.onTaskStart?.(module.id, i, modules.length);
 		options.onProgress?.(module.id, i, modules.length);
 
 		if (options.incremental) {

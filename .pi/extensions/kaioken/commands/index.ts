@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Models, ThinkingLevel } from "@earendil-works/pi-ai";
+import { Box, Text } from "@earendil-works/pi-tui";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { buildGraph } from "../../../../kaioken/graph/src/build.ts";
@@ -113,6 +114,192 @@ function resolveRoot(rootFn?: () => string, ctx?: ExtensionContext): string {
 	return process.cwd();
 }
 
+/**
+ * The UI surface a live log needs. All methods are optional so a missing TUI
+ * (print/rpc mode, tests) degrades to silence rather than a throw.
+ */
+export interface LiveLogUI {
+	notify?: (message: string, type?: "info" | "warning" | "error") => void;
+	setStatus?: (key: string, text: string | undefined) => void;
+	setWidget?: (key: string, content: string[] | undefined) => void;
+	setWorkingMessage?: (message?: string) => void;
+}
+
+/**
+ * Data payload stored in Pi session for durable TUI transcript rendering.
+ * Does not participate in LLM context (Invariant 1: clean session).
+ */
+export interface KaiokenProgressData {
+	scope: string;
+	kind: "start" | "progress" | "task" | "done" | "error";
+	message: string;
+	detail?: string;
+	timestamp?: number;
+}
+
+/**
+ * Register custom transcript entry renderer with Pi so live logs appear
+ * directly in the main chat/text output container.
+ */
+export function registerProgressRenderer(pi: ExtensionAPI): void {
+	if (typeof (pi as any)?.registerEntryRenderer !== "function") return;
+
+	pi.registerEntryRenderer<KaiokenProgressData>("kaioken-progress", (entry, options, theme) => {
+		const data = entry.data;
+		if (!data || !data.message) return undefined;
+
+		const fg = (color: string, text: string) =>
+			theme?.fg ? (theme.fg as any)(color, text) : text;
+
+		let symbol = "•";
+		let color = "accent";
+		switch (data.kind) {
+			case "start":
+				symbol = "◆";
+				color = "accent";
+				break;
+			case "task":
+				symbol = "→";
+				color = "accent";
+				break;
+			case "progress":
+				symbol = "…";
+				color = "dim";
+				break;
+			case "done":
+				symbol = "✓";
+				color = "success";
+				break;
+			case "error":
+				symbol = "✗";
+				color = "error";
+				break;
+		}
+
+		const badge = fg("accent", `[${data.scope}]`);
+		const styledSymbol = fg(color, symbol);
+
+		const lines = data.message.split("\n");
+		const firstLine = `${styledSymbol} ${badge} ${lines[0]}`;
+		const allLines =
+			lines.length > 1
+				? [firstLine, ...lines.slice(1).map((l) => `    ${l}`)].join("\n")
+				: firstLine;
+
+		const box = new Box(1, 0);
+		box.addChild(new Text(allLines, 0, 0));
+		if (data.detail && options.expanded) {
+			box.addChild(new Text(fg("dim", `    ${data.detail}`), 0, 0));
+		}
+		return box;
+	});
+}
+
+/**
+ * Live progress log for long-running `kaio-*` commands.
+ *
+ * Mirrors every step into both channels:
+ *
+ * - **Chat Transcript** (`appendEntry` + `kaioken-progress` renderer):
+ *   Appends durable, cleanly styled milestone lines directly in the text output area.
+ * - **Widget** (`setWidget`): persistent `✓`/`✗` history plus in-flight item.
+ * - **Footer + spinner** (`setStatus`, `setWorkingMessage`): bottom status bar tracking.
+ */
+export class LiveLog {
+	private ui: LiveLogUI | undefined;
+	private scope: string;
+	private append?: (customType: string, data?: unknown) => void;
+	private completed: string[] = [];
+	private current: string | undefined;
+
+	constructor(
+		ui: LiveLogUI | undefined,
+		scope: string,
+		appendOrPi?: ExtensionAPI | ((customType: string, data?: unknown) => void),
+	) {
+		this.ui = ui;
+		this.scope = scope;
+		if (typeof appendOrPi === "function") {
+			this.append = appendOrPi;
+		} else if (appendOrPi && typeof (appendOrPi as any).appendEntry === "function") {
+			this.append = (type, data) => (appendOrPi as ExtensionAPI).appendEntry(type, data);
+		}
+	}
+
+	/** Run start: immediate transcript line so the screen is never empty. */
+	start(message: string, detail?: string): void {
+		this.emitStatus(message);
+		this.emitTranscript("start", message, detail);
+	}
+
+	/** Single updating progress line in transcript, footer, and spinner. */
+	progress(statusText: string, detail?: string): void {
+		this.emitStatus(statusText);
+		this.emitTranscript("progress", statusText, detail);
+	}
+
+	/** A unit of work started: names it in transcript, spinner and widget. */
+	taskStarted(label: string, statusText: string, detail?: string): void {
+		this.current = label;
+		this.emitStatus(statusText);
+		this.refreshWidget();
+		this.emitTranscript("task", statusText, detail);
+	}
+
+	/** A unit of work finished: appends it to persistent history and transcript. */
+	docDone(label: string, statusText: string, detail?: string): void {
+		if (this.current === label) this.current = undefined;
+		this.completed.push(`✓ ${label}`);
+		this.emitStatus(statusText);
+		this.refreshWidget();
+		this.emitTranscript("done", statusText, detail);
+	}
+
+	/** A unit of work failed: error line in transcript plus history. */
+	failure(message: string, detail?: string): void {
+		this.completed.push(`✗ ${message}`);
+		this.ui?.setWorkingMessage?.(undefined);
+		this.ui?.notify?.(message, "error");
+		this.refreshWidget();
+		this.emitTranscript("error", message, detail);
+	}
+
+	/** Run end: clears the spinner, sets the final status, emits done entry. */
+	done(summary: string, statusText?: string, detail?: string): void {
+		this.ui?.setWorkingMessage?.(undefined);
+		if (statusText !== undefined) this.ui?.setStatus?.("kaioken", statusText);
+		this.ui?.notify?.(summary, "info");
+		this.emitTranscript("done", summary, detail);
+	}
+
+	private emitStatus(text: string): void {
+		this.ui?.setStatus?.("kaioken", text);
+		this.ui?.notify?.(text, "info");
+		this.ui?.setWorkingMessage?.(text);
+	}
+
+	private emitTranscript(kind: KaiokenProgressData["kind"], message: string, detail?: string): void {
+		if (!this.append) return;
+		try {
+			this.append("kaioken-progress", {
+				scope: this.scope,
+				kind,
+				message,
+				detail,
+				timestamp: Date.now(),
+			});
+		} catch {
+			// Best-effort transcript emission; never fail the command
+		}
+	}
+
+	private refreshWidget(): void {
+		const lines = [`${this.scope}:`, ...this.completed.slice(-8)];
+		if (this.current !== undefined) lines.push(`… ${this.current}`);
+		this.ui?.setWidget?.("kaioken", lines.slice(0, 10));
+	}
+}
+
 let activeServer: RunningServer | null = null;
 
 /**
@@ -205,15 +392,23 @@ export async function runPlan(
 	root: string,
 	multiplier: number,
 	client?: ModelClient | null,
+	options?: {
+		scan?: any;
+		index?: any;
+		onProgress?: (message: string) => void;
+	},
 ): Promise<PlanRun> {
-	const scanResult = await scan(root);
-	const index = await readIndexArtifact(root).catch(() => null);
+	options?.onProgress?.("Scanning workspace files…");
+	const scanResult = options?.scan ?? (await scan(root));
+	options?.onProgress?.("Reading symbol index…");
+	const index = options?.index !== undefined ? options.index : await readIndexArtifact(root).catch(() => null);
 
 	let plan: ModulePlan;
 	let generated = false;
 	const defects: string[] = [];
 
 	if (client) {
+		options?.onProgress?.("Proposing module plan with model…");
 		const result = await proposeModulePlan(scanResult, index, client, { multiplier });
 		plan = result.plan;
 		generated = true;
@@ -221,6 +416,7 @@ export async function runPlan(
 			defects.push(`[${defect.severity}] ${defect.message}`);
 		}
 	} else {
+		options?.onProgress?.("Computing mechanical decomposition…");
 		plan = await mechanicalPlan(root, multiplier);
 		const validation = validatePlan(plan, scanResult);
 		for (const defect of validation.defects) {
@@ -272,52 +468,83 @@ export function registerCommands(
 	spendGate: SpendGate = new DefaultSpendGate(),
 	web: WebPorts = NO_WEB_PORTS,
 ) {
-	const off = (name: string, desc: string, fn: (args: string, r: string) => Promise<string>) =>
-		pi.registerCommand(name, {
-			description: desc,
-			handler: async (args, ctx) => {
-				const r = resolveRoot(root, ctx);
-				const out = await fn(args || "", r);
-				ctx.ui?.notify?.(out, "info");
-			},
-		});
+	registerProgressRenderer(pi);
 
 	// 1. /kaio-scan
-	off("kaio-scan", "Deterministic repo inventory + risk flags", async (_a, r) => {
-		const scanResult = await scan(r);
-		await writeScanArtifact(r, scanResult);
-		// `risk` is a list of risk classes per file, not a graded object. Reading
-		// it as `risk.level` silently produced "0 high risk flags" on every
-		// repository, including ones full of private keys.
-		const risky = scanResult.files.filter((f) => f.risk.length > 0);
-		const byClass = new Map<string, number>();
-		for (const file of risky) {
-			for (const risk of file.risk) byClass.set(risk, (byClass.get(risk) ?? 0) + 1);
-		}
-		const breakdown = [...byClass.entries()]
-			.sort((a, b) => b[1] - a[1])
-			.map(([risk, n]) => `${n} ${risk}`)
-			.join(", ");
-		const indexResult = await buildIndex(scanResult);
-		await writeIndexArtifact(r, indexResult.index);
-		return `Scan complete: ${scanResult.fileCount} files (${Math.round(scanResult.totalBytes / 1024)} KB), ${indexResult.index.symbolCount} symbols indexed.${breakdown ? ` Risk flags: ${breakdown}.` : " No risk flags."}`;
+	pi.registerCommand("kaio-scan", {
+		description: "Deterministic repo inventory + risk flags",
+		handler: async (_a, ctx) => {
+			const r = resolveRoot(root, ctx);
+			const log = new LiveLog(ctx.ui, "scan", pi);
+			log.start("Scanning repository files and indexing symbols…");
+			try {
+				const scanResult = await scan(r);
+				await writeScanArtifact(r, scanResult);
+				log.progress(`Scanned ${scanResult.fileCount} files (${Math.round(scanResult.totalBytes / 1024)} KB). Building AST symbol index…`);
+				const risky = scanResult.files.filter((f) => f.risk.length > 0);
+				const byClass = new Map<string, number>();
+				for (const file of risky) {
+					for (const risk of file.risk) byClass.set(risk, (byClass.get(risk) ?? 0) + 1);
+				}
+				const breakdown = [...byClass.entries()]
+					.sort((a, b) => b[1] - a[1])
+					.map(([risk, n]) => `${n} ${risk}`)
+					.join(", ");
+				const indexResult = await buildIndex(scanResult);
+				await writeIndexArtifact(r, indexResult.index);
+				log.done(
+					`Scan complete: ${scanResult.fileCount} files (${Math.round(scanResult.totalBytes / 1024)} KB), ${indexResult.index.symbolCount} symbols indexed.${breakdown ? ` Risk flags: ${breakdown}.` : " No risk flags."}`,
+				);
+			} catch (err: any) {
+				log.failure(`Scan failed: ${err.message}`);
+			}
+		},
 	});
 
 	// 2. /kaio-symbols
-	off("kaio-symbols", "Lookup symbol declaration in AST oracle", async (args, r) => {
-		if (!args.trim()) return "Usage: /kaio-symbols <symbolName>";
-		const index = await readIndexArtifact(r);
-		const oracle = new SymbolOracle(index ?? { root: r, builtAt: "", fileCount: 0, symbolCount: 0, unparsedLanguages: {}, files: [] });
-		const hits = oracle.lookup(args.trim());
-		return hits.length
-			? JSON.stringify(hits, null, 2)
-			: `NEGATIVE GUARANTEE: no symbol matching "${args.trim()}" is declared.`;
+	pi.registerCommand("kaio-symbols", {
+		description: "Lookup symbol declaration in AST oracle",
+		handler: async (args, ctx) => {
+			const r = resolveRoot(root, ctx);
+			const log = new LiveLog(ctx.ui, "symbols", pi);
+			if (!args.trim()) {
+				log.failure("Usage: /kaio-symbols <symbolName>");
+				return;
+			}
+			log.start(`Looking up symbol "${args.trim()}"…`);
+			try {
+				const index = await readIndexArtifact(r);
+				const oracle = new SymbolOracle(index ?? { root: r, builtAt: "", fileCount: 0, symbolCount: 0, unparsedLanguages: {}, files: [] });
+				const hits = oracle.lookup(args.trim());
+				log.done(
+					hits.length
+						? JSON.stringify(hits, null, 2)
+						: `NEGATIVE GUARANTEE: no symbol matching "${args.trim()}" is declared.`,
+				);
+			} catch (err: any) {
+				log.failure(`Symbol lookup failed: ${err.message}`);
+			}
+		},
 	});
 
 	// 3. /kaio-search
-	off("kaio-search", "BM25+RRF lexical and structural search", async (args, r) => {
-		if (!args.trim()) return "Usage: /kaio-search <query>";
-		return await bm25Search(r, args.trim(), 8);
+	pi.registerCommand("kaio-search", {
+		description: "BM25+RRF lexical and structural search",
+		handler: async (args, ctx) => {
+			const r = resolveRoot(root, ctx);
+			const log = new LiveLog(ctx.ui, "search", pi);
+			if (!args.trim()) {
+				log.failure("Usage: /kaio-search <query>");
+				return;
+			}
+			log.start(`Searching for "${args.trim()}"…`);
+			try {
+				const hits = await bm25Search(r, args.trim(), 8);
+				log.done(hits);
+			} catch (err: any) {
+				log.failure(`Search failed: ${err.message}`);
+			}
+		},
 	});
 
 	// 4. /kaio-status
@@ -325,15 +552,21 @@ export function registerCommands(
 		description: "0-token staleness drift report",
 		handler: async (_args, ctx) => {
 			const r = resolveRoot(root, ctx);
-			const report = await checkDrift(r);
-			const summary = `DRIFT REPORT: freshness ${Math.round(report.freshness * 100)}%, ${report.stale.length} stale doc(s), ${report.undocumentedFiles.length} undocumented file(s)`;
-			ctx.ui?.notify?.(summary, "info");
-			if (report.stale.length > 0) {
-				ctx.ui?.setStatus?.("kaioken", `${report.stale.length} stale docs`);
-				ctx.ui?.setWidget?.("kaioken", [
-					"Kaioken Drift:",
-					...report.stale.slice(0, 10).map((d) => `  - ${d.document} (${d.changed.length} changed)`),
-				]);
+			const log = new LiveLog(ctx.ui, "status", pi);
+			log.start("Checking staleness and provenance drift…");
+			try {
+				const report = await checkDrift(r);
+				const summary = `DRIFT REPORT: freshness ${Math.round(report.freshness * 100)}%, ${report.stale.length} stale doc(s), ${report.undocumentedFiles.length} undocumented file(s)`;
+				log.done(summary);
+				if (report.stale.length > 0) {
+					ctx.ui?.setStatus?.("kaioken", `${report.stale.length} stale docs`);
+					ctx.ui?.setWidget?.("kaioken", [
+						"Kaioken Drift:",
+						...report.stale.slice(0, 10).map((d) => `  - ${d.document} (${d.changed.length} changed)`),
+					]);
+				}
+			} catch (err: any) {
+				log.failure(`Status check failed: ${err.message}`);
 			}
 		},
 	});
@@ -343,28 +576,44 @@ export function registerCommands(
 		description: "Run native build+test gate",
 		handler: async (_args, ctx) => {
 			const r = resolveRoot(root, ctx);
-			const outcome = await runVerify(r);
-			if (outcome.pass) {
-				ctx.ui?.setStatus?.("kaioken", "verified ✓");
-				ctx.ui?.notify?.("VERIFY: PASS (0 errors)", "info");
-			} else {
-				ctx.ui?.setStatus?.("kaioken", "UNVERIFIED CHANGES");
-				ctx.ui?.notify?.(`VERIFY: FAIL\n${outcome.summary}`, "error");
-				ctx.ui?.setWidget?.("kaioken", [
-					"Verify Failure:",
-					...outcome.summary.split("\n").slice(-10),
-				]);
+			const log = new LiveLog(ctx.ui, "verify", pi);
+			log.start("Running native verification gate (build + tests)…");
+			try {
+				const outcome = await runVerify(r);
+				if (outcome.pass) {
+					ctx.ui?.setStatus?.("kaioken", "verified ✓");
+					log.done("VERIFY: PASS (0 errors)");
+				} else {
+					ctx.ui?.setStatus?.("kaioken", "UNVERIFIED CHANGES");
+					log.failure(`VERIFY: FAIL\n${outcome.summary}`);
+					ctx.ui?.setWidget?.("kaioken", [
+						"Verify Failure:",
+						...outcome.summary.split("\n").slice(-10),
+					]);
+				}
+			} catch (err: any) {
+				log.failure(`Verify failed: ${err.message}`);
 			}
 		},
 	});
 
 	// 6. /kaio-graph
-	off("kaio-graph", "Build and inspect knowledge dependency graph", async (_a, r) => {
-		const records = await gatherProvenance(r);
-		const graph = buildGraph({ provenance: records });
-		await writeGraph(r, graph);
-		const stats = graphStats(graph);
-		return `Knowledge Graph: ${stats.nodes} nodes, ${stats.edges} edges, ${stats.coveredFiles} covered files. Saved to .kaioken/graph.json.`;
+	pi.registerCommand("kaio-graph", {
+		description: "Build and inspect knowledge dependency graph",
+		handler: async (_a, ctx) => {
+			const r = resolveRoot(root, ctx);
+			const log = new LiveLog(ctx.ui, "graph", pi);
+			log.start("Building knowledge dependency graph…");
+			try {
+				const records = await gatherProvenance(r);
+				const graph = buildGraph({ provenance: records });
+				await writeGraph(r, graph);
+				const stats = graphStats(graph);
+				log.done(`Knowledge Graph: ${stats.nodes} nodes, ${stats.edges} edges, ${stats.coveredFiles} covered files. Saved to .kaioken/graph.json.`);
+			} catch (err: any) {
+				log.failure(`Graph build failed: ${err.message}`);
+			}
+		},
 	});
 
 	// 7. /kaio-serve
@@ -372,39 +621,49 @@ export function registerCommands(
 		description: "Start offline documentation preview server",
 		handler: async (_args, ctx) => {
 			const r = resolveRoot(root, ctx);
+			const log = new LiveLog(ctx.ui, "serve", pi);
 			if (activeServer) {
-				return ctx.ui?.notify?.(`Offline server already active at http://localhost:${activeServer.port}`, "info");
+				log.done(`Offline server already active at http://localhost:${activeServer.port}`);
+				return;
 			}
+			log.start("Starting offline documentation preview server…");
 			try {
 				activeServer = await serve({ root: r, port: 4173 });
-				ctx.ui?.notify?.(`Offline preview server active at http://localhost:${activeServer.port}`, "info");
+				log.done(`Offline preview server active at http://localhost:${activeServer.port}`);
 			} catch (e: any) {
-				ctx.ui?.notify?.(`Failed to start preview server: ${e.message}`, "error");
+				log.failure(`Failed to start preview server: ${e.message}`);
 			}
 		},
 	});
 
 	// 8. /kaio-export
-	off("kaio-export", "Export static standalone documentation bundle", async (_a, r) => {
-		const wikiFiles = await readWikiTree(join(r, ".kaioken", "wiki")).catch(() => []);
-		const cards = await readCards(r).catch(() => []);
-		const skills = await loadSkills(r).catch(() => ({ skills: [], problems: [] }));
-		// The manifest records what the bundle contains, by count and by origin.
-		// `files` was never a field of ExportManifest, so the written manifest
-		// lacked the counts a consumer needs to know what it is looking at.
-		const manifest: ExportManifest = {
-			version: 1,
-			generatedAt: new Date().toISOString(),
-			repository: r,
-			counts: {
-				cards: cards.length,
-				wikiDocuments: wikiFiles.length,
-				skills: skills.skills.length,
-			},
-		};
-		const bundleDir = join(r, ".kaioken", "export");
-		const written = await writeExportTree(bundleDir, wikiFiles, manifest);
-		return `Exported ${written.length} asset(s) to .kaioken/export/ (${manifest.counts.wikiDocuments} wiki document(s), ${manifest.counts.cards} card(s), ${manifest.counts.skills} skill(s)).`;
+	pi.registerCommand("kaio-export", {
+		description: "Export static standalone documentation bundle",
+		handler: async (_a, ctx) => {
+			const r = resolveRoot(root, ctx);
+			const log = new LiveLog(ctx.ui, "export", pi);
+			log.start("Exporting static standalone documentation bundle…");
+			try {
+				const wikiFiles = await readWikiTree(join(r, ".kaioken", "wiki")).catch(() => []);
+				const cards = await readCards(r).catch(() => []);
+				const skills = await loadSkills(r).catch(() => ({ skills: [], problems: [] }));
+				const manifest: ExportManifest = {
+					version: 1,
+					generatedAt: new Date().toISOString(),
+					repository: r,
+					counts: {
+						cards: cards.length,
+						wikiDocuments: wikiFiles.length,
+						skills: skills.skills.length,
+					},
+				};
+				const bundleDir = join(r, ".kaioken", "export");
+				const written = await writeExportTree(bundleDir, wikiFiles, manifest);
+				log.done(`Exported ${written.length} asset(s) to .kaioken/export/ (${manifest.counts.wikiDocuments} wiki document(s), ${manifest.counts.cards} card(s), ${manifest.counts.skills} skill(s)).`);
+			} catch (err: any) {
+				log.failure(`Export failed: ${err.message}`);
+			}
+		},
 	});
 
 	// 9. /kaio-delegate
@@ -413,19 +672,16 @@ export function registerCommands(
 		handler: async (args, ctx) => {
 			const r = resolveRoot(root, ctx);
 			const taskSlug = slug(args || "task");
+			const log = new LiveLog(ctx.ui, "delegate", pi);
+			log.start(`Creating isolated worktree for "${taskSlug}"…`);
 			try {
 				const wt = await createWorktree(r, taskSlug);
-				// The model is named from the session rather than hard-coded.
-				// The old text told the user to run `--model
-				// antigravity/gemini-3.8-flash-high`, a provider that is not
-				// configured here — so following the instruction failed.
 				const model = ctx.model ? `--model ${ctx.model.provider}/${ctx.model.id}` : "";
-				ctx.ui?.notify?.(
+				log.done(
 					`worktree: ${wt}\nrun: cd ${wt} && pi ${model}\nmerge: /kaio-merge ${taskSlug}`.replace(/ +$/m, ""),
-					"info",
 				);
 			} catch (e: any) {
-				ctx.ui?.notify?.(`Failed to delegate worktree: ${e.message}`, "error");
+				log.failure(`Failed to delegate worktree: ${e.message}`);
 			}
 		},
 	});
@@ -437,15 +693,22 @@ export function registerCommands(
 			const r = resolveRoot(root, ctx);
 			const taskSlug = slug(args || "task");
 			const wt = worktreePath(r, taskSlug);
-			const verification = await runVerify(wt);
-			if (!verification.pass) {
-				return ctx.ui?.notify?.(`VERIFY FAIL in ${wt} — not merging\n${verification.summary}`, "error");
+			const log = new LiveLog(ctx.ui, "merge", pi);
+			try {
+				const verification = await runVerify(wt);
+				if (!verification.pass) {
+					log.failure(`VERIFY FAIL in ${wt} — not merging\n${verification.summary}`);
+					return;
+				}
+				const res = await ffMerge(r, taskSlug);
+				if (!res.success) {
+					log.failure(`Merge failed: ${res.message}`);
+					return;
+				}
+				log.done(`merged ${taskSlug} ✓`);
+			} catch (e: any) {
+				log.failure(`Merge failed: ${e.message}`);
 			}
-			const res = await ffMerge(r, taskSlug);
-			if (!res.success) {
-				return ctx.ui?.notify?.(`Merge failed: ${res.message}`, "error");
-			}
-			ctx.ui?.notify?.(`merged ${taskSlug} ✓`, "info");
 		},
 	});
 
@@ -457,12 +720,23 @@ export function registerCommands(
 			const m = parseMult(args);
 			if (!(await spendGate.confirm(ctx, "plan", m))) return;
 
-			const out = await runPlan(r, m, clientFor(ctx));
-			const note = out.generated
-				? "modules.yaml written by the model"
-				: "modules.yaml written mechanically (no model bound)";
-			ctx.ui?.notify?.(`${note} — REVIEW, then /kaio-cards ${args || `×${m}`}`, "info");
-			ctx.ui?.setWidget?.("kaioken", out.moduleTree.slice(0, 12));
+			const log = new LiveLog(ctx.ui, "plan", pi);
+			log.start(`Starting module planning (multiplier ×${m})…`);
+			try {
+				const client = clientFor(ctx);
+				const out = await runPlan(r, m, client, {
+					onProgress: (step) => log.progress(step),
+				});
+				const note = out.generated
+					? "modules.yaml written by the model"
+					: "modules.yaml written mechanically (no model bound)";
+				log.done(`${note} — REVIEW, then /kaio-cards ${args || `×${m}`}\n\n${out.moduleTree.join("\n")}`);
+				ctx.ui?.setWidget?.("kaioken", out.moduleTree.slice(0, 12));
+			} catch (err: any) {
+				log.failure(`Plan failed: ${err.message}`);
+			} finally {
+				ctx.ui?.setWorkingMessage?.(undefined);
+			}
 		},
 	});
 
@@ -474,40 +748,54 @@ export function registerCommands(
 			const m = parseMult(args);
 			if (!(await spendGate.confirm(ctx, "cards", m))) return;
 
-			const plan = await readModulePlan(r);
-			if (!plan) {
-				ctx.ui?.notify?.("No module plan found. Run /kaio-plan first.", "info");
-				return;
+			const log = new LiveLog(ctx.ui, "cards", pi);
+			log.start(`Starting knowledge cards generation (multiplier ×${m})…`);
+			try {
+				log.progress("Reading module plan from .kaioken/module-plan.yaml…");
+				const plan = await readModulePlan(r);
+				if (!plan) {
+					log.failure("No module plan found. Run /kaio-plan first.");
+					return;
+				}
+
+				const client = clientFor(ctx);
+				if (!client) {
+					log.failure("No model bound; cards need one. Configure a model, then retry.");
+					return;
+				}
+
+				log.progress(`Loaded module plan with ${plan.modules.length} module(s).`);
+				log.progress("Scanning workspace files and loading symbol index…");
+				const scanResult = await scan(r);
+				const index = await readIndexArtifact(r).catch(() => null);
+				const knownFiles = new Map(scanResult.files.map((f) => [f.path, f.hash]));
+				log.progress(`Scanned ${scanResult.fileCount} files, ${index?.symbolCount ?? 0} symbols indexed.`);
+
+				const results = await generateCards(plan, index, client, {
+					multiplier: m,
+					knownFiles,
+					onTaskStart: (id, done, total) =>
+						log.taskStarted(id, `cards ${done + 1}/${total}: ${id}…`),
+					onProgress: (id, done, total) =>
+						log.docDone(id, `cards ${done + 1}/${total}: ${id}`),
+				});
+
+				for (const result of results) await writeCard(r, result.card);
+
+				const ungrounded = results.reduce((n, x) => n + x.card.verification.ungrounded.length, 0);
+				log.done(
+					`Wrote ${results.length} card(s) to .kaioken/cards. ${ungrounded} ungrounded claim(s) reported in each card's verification.`,
+					"grounded",
+				);
+				ctx.ui?.setWidget?.(
+					"kaioken",
+					results.slice(0, 12).map((x) => `card ${x.card.moduleId}: ${x.card.verification.grounded} grounded`),
+				);
+			} catch (err: any) {
+				log.failure(`Cards generation failed: ${err.message}`);
+			} finally {
+				ctx.ui?.setWorkingMessage?.(undefined);
 			}
-
-			const client = clientFor(ctx);
-			if (!client) {
-				ctx.ui?.notify?.("No model bound; cards need one. Configure a model, then retry.", "info");
-				return;
-			}
-
-			const scanResult = await scan(r);
-			const index = await readIndexArtifact(r).catch(() => null);
-			const knownFiles = new Map(scanResult.files.map((f) => [f.path, f.hash]));
-
-			const results = await generateCards(plan, index, client, {
-				multiplier: m,
-				knownFiles,
-				onProgress: (id, done, total) => ctx.ui?.setStatus?.("kaioken", `cards ${done + 1}/${total}: ${id}`),
-			});
-
-			for (const result of results) await writeCard(r, result.card);
-
-			const ungrounded = results.reduce((n, x) => n + x.card.verification.ungrounded.length, 0);
-			ctx.ui?.setStatus?.("kaioken", "grounded");
-			ctx.ui?.notify?.(
-				`Wrote ${results.length} card(s) to .kaioken/cards. ${ungrounded} ungrounded claim(s) reported in each card's verification.`,
-				"info",
-			);
-			ctx.ui?.setWidget?.(
-				"kaioken",
-				results.slice(0, 12).map((x) => `card ${x.card.moduleId}: ${x.card.verification.grounded} grounded`),
-			);
 		},
 	});
 
@@ -519,75 +807,100 @@ export function registerCommands(
 			const m = parseMult(args);
 			if (!(await spendGate.confirm(ctx, "wiki", m))) return;
 
+			const isPlan = /--plan/.test(args);
+			const log = new LiveLog(ctx.ui, "wiki", pi);
+			log.start(
+				isPlan
+					? `Starting wiki structure planning (multiplier ×${m})…`
+					: `Starting wiki generation cascade (multiplier ×${m})…`,
+			);
+
 			const client = clientFor(ctx);
 			if (!client) {
-				ctx.ui?.notify?.("No model bound; the wiki cascade needs one.", "info");
+				log.failure("No model bound; the wiki cascade needs one.");
 				return;
 			}
 
-			const scanResult = await scan(r);
-			const index = await readIndexArtifact(r).catch(() => null);
+			try {
+				log.progress("Scanning workspace files and reading symbol index…");
+				const scanResult = await scan(r);
+				const index = await readIndexArtifact(r).catch(() => null);
+				log.progress(`Scanned ${scanResult.fileCount} files, ${index?.symbolCount ?? 0} symbols indexed.`);
 
-			// `--plan` is the checkpoint: outline only, then stop.
-			if (/--plan/.test(args)) {
-				const { plan } = await planWiki({ scan: scanResult, index, client, multiplier: m });
-				const path = await writeWikiPlan(r, plan);
-				ctx.ui?.notify?.(`Wrote ${plan.chapters.length} chapter(s) to ${path} — edit, then rerun without --plan.`, "info");
-				ctx.ui?.setWidget?.("kaioken", plan.chapters.slice(0, 12).map((c) => `chapter ${c.id}: ${c.title}`));
-				return;
+				// `--plan` is the checkpoint: outline only, then stop.
+				if (isPlan) {
+					log.taskStarted("planning", "Proposing chapter outline with model…");
+					const { plan } = await planWiki({ scan: scanResult, index, client, multiplier: m });
+					const path = await writeWikiPlan(r, plan);
+					log.done(`Wrote ${plan.chapters.length} chapter(s) to ${path} — edit, then rerun without --plan.`);
+					ctx.ui?.setWidget?.("kaioken", plan.chapters.slice(0, 12).map((c) => `chapter ${c.id}: ${c.title}`));
+					return;
+				}
+
+				log.progress("Reading wiki plan from .kaioken/wiki-plan.yaml…");
+				const plan = await readWikiPlan(r);
+				if (!plan) {
+					log.failure("No wiki plan found. Run /kaio-wiki --plan first.");
+					return;
+				}
+
+				const brief = (await readBrief(r)) ?? undefined;
+				log.progress(`Loaded wiki plan with ${plan.chapters.length} chapter(s). Starting generation…`);
+
+				const out = await runWiki({
+					root: r,
+					plan,
+					scan: scanResult,
+					index,
+					client,
+					multiplier: m,
+					...(brief ? { brief } : {}),
+					onDocument: async (doc) => {
+						await writeWikiDocument(r, doc);
+					},
+					onFailure: (failure) =>
+						log.failure(`wiki: ${failure.kind} ${failure.document}: ${failure.reason}`),
+					onTaskStart: (label) => log.taskStarted(label, `wiki: ${label}…`),
+					onProgress: (label, done, total) =>
+						// The total counts one unit per chapter up front; planned
+						// sections extend the run past it, so it is a lower bound.
+						log.docDone(label, `wiki ${done}/${total}${label.startsWith("section") ? "+" : ""}: ${label}`),
+				});
+
+				// Persist the resolved sections so a rerun reuses the same ids.
+				await writeWikiPlan(r, out.plan);
+				await writeProvenance(
+					r,
+					out.documents.map((d) => d.provenance),
+				);
+				await writeWikiIndex(r, out.plan);
+
+				// Record what the verifier concluded, so a reader can check the
+				// grounding claim rather than take it on trust. Until this existed
+				// the defects were computed, printed once, and dropped — leaving
+				// the serve site with nothing to badge.
+				await writeVerification(r, {
+					model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "offline",
+					multiplier: m,
+					documents: out.documents.map((d) => ({
+						document: d.path,
+						grounded: d.verification.grounded,
+						uncovered: d.verification.uncovered,
+						coverage: d.verification.coverage,
+						defects: d.verification.defects,
+					})),
+				});
+
+				const defects = out.documents.reduce((n, d) => n + groundingDefects(d.verification.defects).length, 0);
+				log.done(
+					`Wrote ${out.documents.length} document(s); ${defects} ungrounded claim(s) reported${out.failures.length ? `, ${out.failures.length} failure(s)` : ""}.`,
+					"grounded",
+				);
+			} catch (err: any) {
+				log.failure(`Wiki cascade failed: ${err.message}`);
+			} finally {
+				ctx.ui?.setWorkingMessage?.(undefined);
 			}
-
-			const plan = await readWikiPlan(r);
-			if (!plan) {
-				ctx.ui?.notify?.("No wiki plan found. Run /kaio-wiki --plan first.", "info");
-				return;
-			}
-
-			const brief = (await readBrief(r)) ?? undefined;
-			const out = await runWiki({
-				root: r,
-				plan,
-				scan: scanResult,
-				index,
-				client,
-				multiplier: m,
-				...(brief ? { brief } : {}),
-				onDocument: async (doc) => {
-					await writeWikiDocument(r, doc);
-				},
-				onProgress: (label, done, total) => ctx.ui?.setStatus?.("kaioken", `wiki ${done}/${total}: ${label}`),
-			});
-
-			// Persist the resolved sections so a rerun reuses the same ids.
-			await writeWikiPlan(r, out.plan);
-			await writeProvenance(
-				r,
-				out.documents.map((d) => d.provenance),
-			);
-			await writeWikiIndex(r, out.plan);
-
-			// Record what the verifier concluded, so a reader can check the
-			// grounding claim rather than take it on trust. Until this existed
-			// the defects were computed, printed once, and dropped — leaving
-			// the serve site with nothing to badge.
-			await writeVerification(r, {
-				model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "offline",
-				multiplier: m,
-				documents: out.documents.map((d) => ({
-					document: d.path,
-					grounded: d.verification.grounded,
-					uncovered: d.verification.uncovered,
-					coverage: d.verification.coverage,
-					defects: d.verification.defects,
-				})),
-			});
-
-			const defects = out.documents.reduce((n, d) => n + groundingDefects(d.verification.defects).length, 0);
-			ctx.ui?.setStatus?.("kaioken", "grounded");
-			ctx.ui?.notify?.(
-				`Wrote ${out.documents.length} document(s); ${defects} ungrounded claim(s) reported${out.failures.length ? `, ${out.failures.length} failure(s)` : ""}.`,
-				"info",
-			);
 		},
 	});
 
@@ -599,58 +912,72 @@ export function registerCommands(
 			const m = parseMult(args);
 			if (!(await spendGate.confirm(ctx, "update", m))) return;
 
-			const drift = await checkDrift(r);
-			const stale = drift.documents.filter((d) => d.freshness !== "current");
+			const log = new LiveLog(ctx.ui, "update", pi);
+			log.start(`Starting staleness check (multiplier ×${m})…`);
+			try {
+				const drift = await checkDrift(r);
+				const stale = drift.documents.filter((d) => d.freshness !== "current");
 
-			if (stale.length === 0) {
-				ctx.ui?.notify?.("Nothing is stale. No spend, no regeneration.", "info");
-				return;
-			}
+				if (stale.length === 0) {
+					log.done("Nothing is stale. No spend, no regeneration.");
+					return;
+				}
 
-			if (/--dry/.test(args)) {
-				ctx.ui?.notify?.(
-					`${stale.length} stale document(s): ${stale.slice(0, 8).map((d) => d.document).join(", ")}`,
-					"info",
+				if (/--dry/.test(args)) {
+					log.done(
+						`${stale.length} stale document(s): ${stale.slice(0, 8).map((d) => d.document).join(", ")}`,
+					);
+					return;
+				}
+
+				const client = clientFor(ctx);
+				if (!client) {
+					log.failure("No model bound; updating needs one.");
+					return;
+				}
+
+				// Regenerate only the stale documents, by path, reusing the plan.
+				const plan = await readWikiPlan(r);
+				if (!plan) {
+					log.failure("No wiki plan found; nothing to update.");
+					return;
+				}
+
+				log.progress("Scanning workspace files and reading symbol index…");
+				const scanResult = await scan(r);
+				const index = await readIndexArtifact(r).catch(() => null);
+				const brief = (await readBrief(r)) ?? undefined;
+
+				log.progress(`Regenerating ${stale.length} stale document(s)…`);
+				const out = await runWiki({
+					root: r,
+					plan,
+					scan: scanResult,
+					index,
+					client,
+					multiplier: m,
+					onlyDocuments: stale.map((d) => d.document),
+					...(brief ? { brief } : {}),
+					onDocument: async (doc) => {
+						await writeWikiDocument(r, doc);
+					},
+					onFailure: (failure) =>
+						log.failure(`update: ${failure.kind} ${failure.document}: ${failure.reason}`),
+					onTaskStart: (label) => log.taskStarted(label, `update: ${label}…`),
+					onProgress: (label, done, total) =>
+						log.docDone(label, `update ${done}/${total}: ${label}`),
+				});
+
+				await writeProvenance(
+					r,
+					out.documents.map((d) => d.provenance),
 				);
-				return;
+				log.done(`Regenerated ${out.documents.length} of ${stale.length} stale document(s).`);
+			} catch (err: any) {
+				log.failure(`Update failed: ${err.message}`);
+			} finally {
+				ctx.ui?.setWorkingMessage?.(undefined);
 			}
-
-			const client = clientFor(ctx);
-			if (!client) {
-				ctx.ui?.notify?.("No model bound; updating needs one.", "info");
-				return;
-			}
-
-			// Regenerate only the stale documents, by path, reusing the plan.
-			const plan = await readWikiPlan(r);
-			if (!plan) {
-				ctx.ui?.notify?.("No wiki plan found; nothing to update.", "info");
-				return;
-			}
-
-			const scanResult = await scan(r);
-			const index = await readIndexArtifact(r).catch(() => null);
-			const brief = (await readBrief(r)) ?? undefined;
-
-			const out = await runWiki({
-				root: r,
-				plan,
-				scan: scanResult,
-				index,
-				client,
-				multiplier: m,
-				onlyDocuments: stale.map((d) => d.document),
-				...(brief ? { brief } : {}),
-				onDocument: async (doc) => {
-					await writeWikiDocument(r, doc);
-				},
-			});
-
-			await writeProvenance(
-				r,
-				out.documents.map((d) => d.provenance),
-			);
-			ctx.ui?.notify?.(`Regenerated ${out.documents.length} of ${stale.length} stale document(s).`, "info");
 		},
 	});
 
@@ -662,8 +989,9 @@ export function registerCommands(
 			const m = parseMult(args);
 			const topic = args.replace(/--?\w+/g, "").replace(/[×x]\d+/i, "").trim();
 
+			const log = new LiveLog(ctx.ui, "research", pi);
 			if (!topic) {
-				ctx.ui?.notify?.("Usage: /kaio-research <topic> <×N>", "info");
+				log.failure("Usage: /kaio-research <topic> <×N>");
 				return;
 			}
 
@@ -671,37 +999,44 @@ export function registerCommands(
 
 			const client = clientFor(ctx);
 			if (!client) {
-				ctx.ui?.notify?.("No model bound; research needs one.", "info");
+				log.failure("No model bound; research needs one.");
 				return;
 			}
 
 			// The network is injected here and nowhere else, so the research core
 			// itself stays transport-free and offline-testable (Invariant 10).
 			const depth = depthFor(m);
-			const gathered = await gatherSources({
-				question: topic,
-				depth,
-				search: web.search,
-				fetch: web.fetch,
-			});
+			log.start(`Starting deep research for "${topic}" (multiplier ×${m})…`);
+			try {
+				log.progress(`Gathering web sources for "${topic}" (depth ${depth})…`);
+				const gathered = await gatherSources({
+					question: topic,
+					depth,
+					search: web.search,
+					fetch: web.fetch,
+				});
 
-			const fetched = gathered.sources.filter((s) => s.fetched).length;
-			if (fetched === 0) {
-				ctx.ui?.notify?.(
-					`No page could be fetched for "${topic}". Nothing to research, and writing without sources would be fiction.`,
-					"info",
+				const fetched = gathered.sources.filter((s) => s.fetched).length;
+				if (fetched === 0) {
+					log.failure(
+						`No page could be fetched for "${topic}". Nothing to research, and writing without sources would be fiction.`,
+					);
+					return;
+				}
+
+				log.progress(`Fetched ${fetched}/${gathered.sources.length} source(s). Writing report with model…`);
+				const { document } = await generateResearch({ question: topic, gathered, depth, client });
+				const path = await writeResearchDocument(r, document);
+
+				log.done(
+					`${document.verification.grounded}/${document.verification.cited} citation(s) grounded, ` +
+						`${document.verification.defects.length} defect(s). Written to ${path}.`,
 				);
-				return;
+			} catch (err: any) {
+				log.failure(`Research failed: ${err.message}`);
+			} finally {
+				ctx.ui?.setWorkingMessage?.(undefined);
 			}
-
-			const { document } = await generateResearch({ question: topic, gathered, depth, client });
-			const path = await writeResearchDocument(r, document);
-
-			ctx.ui?.notify?.(
-				`${document.verification.grounded}/${document.verification.cited} citation(s) grounded, ` +
-					`${document.verification.defects.length} defect(s). Written to ${path}.`,
-				"info",
-			);
 		},
 	});
 
@@ -713,45 +1048,59 @@ export function registerCommands(
 			const m = parseMult(args);
 			if (!(await spendGate.confirm(ctx, "skillgen", m))) return;
 
+			const log = new LiveLog(ctx.ui, "skills", pi);
+			log.start(`Starting skill generation (multiplier ×${m})…`);
+
 			const client = clientFor(ctx);
 			if (!client) {
-				ctx.ui?.notify?.("No model bound; skill generation needs one.", "info");
+				log.failure("No model bound; skill generation needs one.");
 				return;
 			}
 
-			const scanResult = await scan(r);
-			const index = await readIndexArtifact(r).catch(() => null);
-			const plan = await readWikiPlan(r);
+			try {
+				log.progress("Scanning workspace files and reading wiki plan…");
+				const scanResult = await scan(r);
+				const index = await readIndexArtifact(r).catch(() => null);
+				const plan = await readWikiPlan(r);
 
-			const proposals = await proposeSkills({
-				scan: scanResult,
-				index,
-				client,
-				...(plan ? { chapters: plan.chapters.map((c) => c.title) } : {}),
-			});
+				log.taskStarted("proposing", "Proposing skills with model…");
+				const proposals = await proposeSkills({
+					scan: scanResult,
+					index,
+					client,
+					...(plan ? { chapters: plan.chapters.map((c) => c.title) } : {}),
+				});
 
-			if (proposals.length === 0) {
-				ctx.ui?.notify?.("The model proposed no skills for this repository.", "info");
-				return;
-			}
-
-			const written: string[] = [];
-			let ungrounded = 0;
-			for (const proposal of proposals) {
-				try {
-					const result = await writeSkill({ root: r, proposal, scan: scanResult, index, client });
-					written.push(result.name);
-					ungrounded += result.ungrounded.length;
-				} catch (error) {
-					ctx.ui?.notify?.(`Skipped ${proposal.name}: ${(error as Error).message}`, "info");
+				if (proposals.length === 0) {
+					log.done("The model proposed no skills for this repository.");
+					return;
 				}
-			}
 
-			ctx.ui?.notify?.(
-				`Wrote ${written.length} skill(s): ${written.join(", ")}.` +
-					(ungrounded ? ` ${ungrounded} ungrounded path(s) reported.` : ""),
-				"info",
-			);
+				log.progress(`Model proposed ${proposals.length} skill(s). Writing skill files…`);
+				const written: string[] = [];
+				let ungrounded = 0;
+				for (let i = 0; i < proposals.length; i++) {
+					const proposal = proposals[i] as (typeof proposals)[number];
+					log.taskStarted(proposal.name, `skills ${i + 1}/${proposals.length}: ${proposal.name}…`);
+					try {
+						const result = await writeSkill({ root: r, proposal, scan: scanResult, index, client });
+						written.push(result.name);
+						ungrounded += result.ungrounded.length;
+						log.docDone(proposal.name, `skills ${i + 1}/${proposals.length}: ✓ ${proposal.name}`);
+					} catch (error) {
+						log.failure(`skills: skipped ${proposal.name}: ${(error as Error).message}`);
+					}
+				}
+
+				log.done(
+					`Wrote ${written.length} skill(s): ${written.join(", ")}.` +
+						(ungrounded ? ` ${ungrounded} ungrounded path(s) reported.` : ""),
+				);
+			} catch (err: any) {
+				log.failure(`Skills generation failed: ${err.message}`);
+			} finally {
+				ctx.ui?.setWorkingMessage?.(undefined);
+			}
 		},
 	});
 }

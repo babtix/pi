@@ -80,6 +80,10 @@ export interface FakePi {
 	themesApplied: unknown[];
 	/** Header factories the bridge registered. */
 	headerFactories: unknown[];
+	/** Custom entries appended through `pi.appendEntry`. */
+	entries: Array<{ customType: string; data?: unknown }>;
+	/** Custom entry renderers registered through `pi.registerEntryRenderer`. */
+	entryRenderers: Map<string, any>;
 }
 
 export function fakePi(): FakePi {
@@ -88,6 +92,8 @@ export function fakePi(): FakePi {
 	const hooks: Record<string, any[]> = {};
 	const status: Array<{ id: string; text: string }> = [];
 	const widgets: Array<{ id: string; lines: string[] }> = [];
+	const entries: Array<{ customType: string; data?: unknown }> = [];
+	const entryRenderers = new Map<string, any>();
 	/** Theme names the bridge asked for, in order. */
 	const themeLookups: string[] = [];
 	/** Theme values the bridge applied, in order. */
@@ -104,6 +110,12 @@ export function fakePi(): FakePi {
 		},
 		on: (event: string, handler: any) => {
 			(hooks[event] ??= []).push(handler);
+		},
+		registerEntryRenderer: (customType: string, renderer: any) => {
+			entryRenderers.set(customType, renderer);
+		},
+		appendEntry: (customType: string, data?: unknown) => {
+			entries.push({ customType, data });
 		},
 	} as unknown as ExtensionAPI;
 
@@ -162,6 +174,8 @@ export function fakePi(): FakePi {
 		themeLookups,
 		themesApplied,
 		headerFactories,
+		entries,
+		entryRenderers,
 	};
 }
 

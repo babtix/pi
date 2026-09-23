@@ -869,6 +869,28 @@ describe("wiki: the run cascade", () => {
 		expect(labels.some((l) => l.startsWith("chapter"))).toBe(true);
 	});
 
+	it("signals task starts before progress completions", async () => {
+		const client = scriptedClient([
+			"# Core\n\nThe `alphaSearch` function walks the index and returns ranked hits.",
+			JSON.stringify({ sections: [{ id: "s1", title: "S1", summary: "First.", files: ["src/a.ts"] }] }),
+			"# S1\n\nThe `alphaSearch` function walks the index and returns ranked hits.",
+		]);
+		const events: string[] = [];
+		await runWiki({
+			root: "/repo",
+			plan,
+			scan,
+			index,
+			client,
+			onTaskStart: (label) => events.push(`start:${label}`),
+			onProgress: (label) => events.push(`done:${label}`),
+		});
+		expect(events).toContain("start:chapter core");
+		expect(events).toContain("start:section core/s1");
+		expect(events.indexOf("start:chapter core")).toBeLessThan(events.indexOf("done:chapter core"));
+		expect(events.indexOf("start:section core/s1")).toBeLessThan(events.indexOf("done:section core/s1"));
+	});
+
 	it("resumes an existing wiki run and skips chapters already written to disk", async () => {
 		const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
 		const { tmpdir } = await import("node:os");
