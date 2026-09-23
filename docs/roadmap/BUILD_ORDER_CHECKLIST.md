@@ -8,11 +8,11 @@
 ### Step 1: Category 12 — VerifyCore, Grounding & Anti-Hallucination Shield
 *Rank: #1 Critical Foundation | Package: `kaioken/verifycore` | Features: `#UX-1101` – `#UX-1200`*  
 📄 **Plan Reference**: [`12-verifycore-grounding-anti-hallucination-shield.md`](categories/12-verifycore-grounding-anti-hallucination-shield.md)
-- [ ] **1.1** Implement O(1) pre-indexed basename lookup map for sub-millisecond file path resolution (`UX-1101`–`UX-1105`)
-- [ ] **1.2** Build quote anchor fuzzy matcher with AST scope boundary verification (`UX-1111`–`UX-1115`)
-- [ ] **1.3** Implement defect scoring algorithm calculating grounding confidence percentage (`UX-1116`–`UX-1120`)
-- [ ] **1.4** Deploy anti-hallucination shield flagging ungrounded claims in generated cards/docs (`UX-1121`–`UX-1125`)
-- [ ] **1.5** Implement mechanistic repair guidance prompt suggesting real symbol replacements (`UX-1126`–`UX-1130`)
+- [x] **1.1** Implement O(1) pre-indexed basename lookup map for sub-millisecond file path resolution (`UX-1101`–`UX-1105`)
+- [x] **1.2** Build quote anchor fuzzy matcher with AST scope boundary verification (`UX-1111`–`UX-1115`)
+- [x] **1.3** Implement defect scoring algorithm calculating grounding confidence percentage (`UX-1116`–`UX-1120`)
+- [x] **1.4** Deploy anti-hallucination shield flagging ungrounded claims in generated cards/docs (`UX-1121`–`UX-1125`)
+- [x] **1.5** Implement mechanistic repair guidance prompt suggesting real symbol replacements (`UX-1126`–`UX-1130`)
 
 ---
 
