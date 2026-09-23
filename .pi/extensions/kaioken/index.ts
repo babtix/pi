@@ -1,4 +1,6 @@
 import { readFile, readdir } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
@@ -48,7 +50,13 @@ export function applyKaiokenTheme(ctx: ExtensionContext): void {
 	// Respect a deliberate choice. `dark/dark` is Pi's default auto-setting, so
 	// it reads as "no preference yet" rather than as a decision.
 	const configured = readConfiguredTheme();
-	if (configured && configured !== "dark/dark" && configured !== THEME_NAME) return;
+	if (
+		configured &&
+		configured !== "dark/dark" &&
+		configured !== THEME_NAME &&
+		!configured.endsWith(`/${THEME_NAME}`)
+	)
+		return;
 
 	const result = ctx.ui.setTheme(instance);
 	if (!result.success) return;
@@ -65,9 +73,6 @@ export function applyKaiokenTheme(ctx: ExtensionContext): void {
 export function readConfiguredTheme(env: NodeJS.ProcessEnv = process.env): string | undefined {
 	if (env.KAIOKEN_THEME_SETTING) return env.KAIOKEN_THEME_SETTING;
 	try {
-		const { readFileSync } = require("node:fs") as typeof import("node:fs");
-		const { homedir } = require("node:os") as typeof import("node:os");
-		const { join } = require("node:path") as typeof import("node:path");
 		const settings = JSON.parse(readFileSync(join(homedir(), ".pi", "agent", "settings.json"), "utf8"));
 		return typeof settings?.theme === "string" ? settings.theme : undefined;
 	} catch {

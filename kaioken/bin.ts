@@ -1,18 +1,95 @@
 #!/usr/bin/env node
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { parseArgs } from "node:util";
+import { formatReport, runEval } from "./evals/src/index.ts";
+import { hookStatus, installPostCommit, readDiff, removePostCommit, worktreeStatus } from "./gitops/src/index.ts";
+import { buildGraph, graphStats, renderGraphJson, renderGraphMarkdown, renderGraphMermaid, writeGraph } from "./graph/src/index.ts";
+import { predictImpactForSymbol, renderImpact } from "./impact/src/index.ts";
 import { buildIndex, readIndexArtifact, SymbolOracle, writeIndexArtifact } from "./index/src/index.ts";
-import { checkDrift } from "./provenance/src/index.ts";
+import { proposeModulePlan, readCards, writeModulePlan } from "./plan/src/index.ts";
+import { checkDrift, gatherProvenance } from "./provenance/src/index.ts";
+import { readResearchDocuments } from "./research/src/index.ts";
 import { KAIOKEN_DIR, scan, writeScanArtifact } from "./scan/src/index.ts";
 import { bm25Search } from "./search/src/index.ts";
-import { predictImpactForSymbol } from "./impact/src/index.ts";
+import { serve } from "./serve/src/index.ts";
+import { discoverRepoCommands } from "./skillgen/src/index.ts";
+import { loadSkills } from "./skills/src/index.ts";
 import { runVerify } from "./verify/src/index.ts";
+import { readProvenance, readVerification, readWikiPlan } from "./wiki/src/index.ts";
 
-const [cmd, ...rest] = process.argv.slice(2);
-const rootIndex = rest.indexOf("--root");
-const root = rootIndex !== -1 && rest[rootIndex + 1] ? rest[rootIndex + 1] : process.cwd();
+function printHelp(): void {
+	console.log(`Kaioken CLI — Grounded Intelligence Pipeline for Codebases
 
-async function main() {
+Usage:
+  kaioken <command> [options] [arguments]
+
+Commands:
+  scan        Deterministic repo inventory, AST symbol index, and risk flags
+  symbols     Lookup symbol declaration in AST oracle
+  status      0-token staleness and drift report
+  search      BM25 lexical and structural search across the codebase
+  impact      Predict blast radius and impact for a symbol
+  verify      Run native build and test verification gate
+  plan        Propose and write module decomposition plan (modules.yaml)
+  cards       Read and inspect knowledge cards from .kaioken/cards
+  wiki        Inspect wiki chapters, verification, and provenance
+  serve       Start offline documentation preview server
+  research    Read grounded research documents from .kaioken/research
+  skills      Load and inspect procedures in .kaioken/skills
+  skillgen    Discover repo commands and inspect procedure opportunities
+  graph       Build and render knowledge dependency graph
+  gitops      Git hooks, diffs, and worktree operations
+  evals       Run 10-probe groundedness evaluation suite
+
+Global Options:
+  --root <path>       Target repository root (default: current working directory)
+  --json              Output raw JSON results
+  -h, --help          Show this help message
+
+Command Options:
+  search:   --limit <n>          Maximum search results to return (default: 8)
+  plan:     --multiplier <n>     Depth multiplier for planning (default: 1)
+  serve:    --port <n>           Port for preview server (default: 4173)
+            --host <str>         Host to bind server to (default: 127.0.0.1)
+  graph:    --format <fmt>       Output format: mermaid | markdown | json | summary
+            --write              Write graph to .kaioken/graph.json
+  gitops:   --action <act>       Action: status | diff | install-hook | remove-hook
+  evals:    --repo <path>        Target repository for evaluations
+`);
+}
+
+async function main(): Promise<void> {
+	const parsed = parseArgs({
+		args: process.argv.slice(2),
+		allowPositionals: true,
+		strict: false,
+		options: {
+			root: { type: "string" },
+			json: { type: "boolean" },
+			help: { type: "boolean", short: "h" },
+			limit: { type: "string" },
+			multiplier: { type: "string" },
+			port: { type: "string" },
+			host: { type: "string" },
+			format: { type: "string" },
+			action: { type: "string" },
+			repo: { type: "string" },
+			write: { type: "boolean" },
+		},
+	});
+
+	const { values, positionals } = parsed;
+	const [cmd, ...args] = positionals;
+
+	if (values.help || !cmd) {
+		printHelp();
+		process.exit(0);
+	}
+
+	const root = values.root ? String(values.root) : process.cwd();
+	const isJson = Boolean(values.json);
+
 	switch (cmd) {
 		case "scan": {
 			const scanResult = await scan(root);
@@ -53,8 +130,9 @@ async function main() {
 			);
 			break;
 		}
+
 		case "symbols": {
-			const query = rest.find((arg) => arg !== "--root" && arg !== root) ?? "";
+			const query = args.join(" ").trim();
 			const index = (await readIndexArtifact(root)) ?? {
 				root,
 				builtAt: "",
@@ -65,28 +143,59 @@ async function main() {
 			};
 			const oracle = new SymbolOracle(index);
 			const hits = oracle.lookup(query);
-			console.log(JSON.stringify(hits, null, 2));
+			if (isJson) {
+				console.log(JSON.stringify(hits, null, 2));
+			} else if (hits.length === 0) {
+				console.log(`NEGATIVE GUARANTEE: no symbol matching "${query}" is declared.`);
+			} else {
+				console.log(JSON.stringify(hits, null, 2));
+			}
 			break;
 		}
+
 		case "status": {
 			const report = await checkDrift(root);
-			console.log(JSON.stringify(report, null, 2));
+			if (isJson) {
+				console.log(JSON.stringify(report, null, 2));
+			} else {
+				console.log(
+					`DRIFT REPORT: freshness ${Math.round(report.freshness * 100)}%, ${report.stale.length} stale doc(s), ${report.undocumentedFiles.length} undocumented file(s)`,
+				);
+				if (report.stale.length > 0) {
+					console.log("Stale documents:");
+					for (const d of report.stale) {
+						console.log(`  - ${d.document} (${d.changed.length} changed file(s))`);
+					}
+				}
+			}
 			break;
 		}
+
 		case "search": {
-			const query = rest.find((arg) => arg !== "--root" && arg !== root) ?? "";
-			const results = await bm25Search(root, query);
+			const query = args.join(" ").trim();
+			const limit = values.limit ? parseInt(String(values.limit), 10) : 8;
+			const results = await bm25Search(root, query, limit);
 			console.log(results);
 			break;
 		}
+
 		case "impact": {
-			const symbol = rest.find((arg) => arg !== "--root" && arg !== root) ?? "";
+			const symbol = args.join(" ").trim();
 			const report = await predictImpactForSymbol(root, symbol);
-			console.log(JSON.stringify(report, null, 2));
+			if (isJson) {
+				console.log(JSON.stringify(report, null, 2));
+			} else {
+				console.log(renderImpact(report));
+			}
 			break;
 		}
+
 		case "verify": {
 			const result = await runVerify(root);
+			if (isJson) {
+				console.log(JSON.stringify(result, null, 2));
+				process.exit(result.pass ? 0 : 1);
+			}
 			if (result.pass) {
 				console.log(`VERIFY: PASS\n${result.summary}`);
 				process.exit(0);
@@ -96,14 +205,228 @@ async function main() {
 			}
 			break;
 		}
+
+		case "plan": {
+			const multiplier = values.multiplier ? parseInt(String(values.multiplier), 10) : 1;
+			const scanResult = await scan(root);
+			const index = await readIndexArtifact(root);
+			const proposeResult = await proposeModulePlan(scanResult, index, null, { multiplier });
+			const planPath = await writeModulePlan(root, proposeResult.plan);
+			if (isJson) {
+				console.log(
+					JSON.stringify(
+						{ plan: proposeResult.plan, validation: proposeResult.validation, planPath },
+						null,
+						2,
+					),
+				);
+			} else {
+				console.log(`Module plan (${proposeResult.source}) written to ${planPath}`);
+				console.log(`Decomposed into ${proposeResult.plan.modules.length} module(s):`);
+				for (const m of proposeResult.plan.modules) {
+					console.log(`  - ${m.id} (${m.files.length} file(s)): ${m.name}`);
+				}
+				if (proposeResult.validation.defects.length > 0) {
+					console.log(`Validation defects (${proposeResult.validation.defects.length}):`);
+					for (const d of proposeResult.validation.defects) {
+						console.log(`  [${d.severity}] ${d.message}`);
+					}
+				}
+			}
+			break;
+		}
+
+		case "cards": {
+			const cards = await readCards(root);
+			if (isJson) {
+				console.log(JSON.stringify(cards, null, 2));
+			} else if (cards.length === 0) {
+				console.log("No cards found in .kaioken/cards.");
+			} else {
+				console.log(`Loaded ${cards.length} card(s) from .kaioken/cards:`);
+				for (const c of cards) {
+					console.log(
+						`  - [${c.moduleId}] (${c.entryPoints.length} entry point(s)): ${c.summary.slice(0, 100)}`,
+					);
+				}
+			}
+			break;
+		}
+
+		case "wiki": {
+			const plan = await readWikiPlan(root);
+			const verification = await readVerification(root);
+			const provenance = await readProvenance(root);
+			if (isJson) {
+				console.log(JSON.stringify({ plan, verification, provenance }, null, 2));
+			} else if (!plan) {
+				console.log("No wiki plan found in .kaioken/wiki/plan.json.");
+			} else {
+				console.log(`Wiki: ${plan.chapters.length} chapter(s)`);
+				for (const ch of plan.chapters) {
+					console.log(`  - Chapter ${ch.id}: ${ch.title} (${ch.sections.length} section(s))`);
+				}
+				if (verification) {
+					console.log(
+						`Verification: multiplier ${verification.multiplier}, model: ${verification.model}, documents: ${verification.documents.length}`,
+					);
+				}
+			}
+			break;
+		}
+
+		case "serve": {
+			const port = values.port ? parseInt(String(values.port), 10) : 4173;
+			const host = values.host ? String(values.host) : "127.0.0.1";
+			const server = await serve({ root, port, host });
+			if (isJson) {
+				console.log(JSON.stringify({ url: server.url, port: server.port, summary: server.summary }, null, 2));
+			} else {
+				console.log(`Offline preview server active at ${server.url}`);
+				if (server.summary) console.log(server.summary);
+				console.log("Press Ctrl+C to stop.");
+			}
+			const shutdown = async () => {
+				await server.close();
+				process.exit(0);
+			};
+			process.on("SIGINT", shutdown);
+			process.on("SIGTERM", shutdown);
+			await new Promise<void>(() => {});
+			break;
+		}
+
+		case "research": {
+			const docs = await readResearchDocuments(root);
+			const query = args.join(" ").trim().toLowerCase();
+			const filtered = query
+				? docs.filter(
+						(d) => d.question.toLowerCase().includes(query) || d.title.toLowerCase().includes(query),
+					)
+				: docs;
+			if (isJson) {
+				console.log(JSON.stringify(filtered, null, 2));
+			} else if (filtered.length === 0) {
+				console.log(
+					`No research documents found${query ? ` matching "${query}"` : ""} in .kaioken/research.`,
+				);
+			} else {
+				console.log(`Found ${filtered.length} research document(s):`);
+				for (const d of filtered) {
+					console.log(
+						`  - [${d.slug}] ${d.title}: ${d.verification.grounded}/${d.verification.cited} citations grounded`,
+					);
+				}
+			}
+			break;
+		}
+
+		case "skills": {
+			const { skills, problems } = await loadSkills(root);
+			if (isJson) {
+				console.log(JSON.stringify({ skills, problems }, null, 2));
+			} else {
+				console.log(`Loaded ${skills.length} skill(s):`);
+				for (const s of skills) {
+					console.log(`  - ${s.name}: ${s.description}`);
+				}
+				if (problems.length > 0) {
+					console.log(`Problems encountered (${problems.length}):`);
+					for (const p of problems) {
+						console.log(`  - [${p.type}] in ${p.file}: ${p.message}`);
+					}
+				}
+			}
+			break;
+		}
+
+		case "skillgen": {
+			const commands = await discoverRepoCommands(root);
+			if (isJson) {
+				console.log(JSON.stringify({ root, discoveredCommands: commands }, null, 2));
+			} else {
+				console.log(`Discovered ${commands.length} repository command(s) for skill grounding:`);
+				for (const c of commands) {
+					console.log(`  - ${c}`);
+				}
+			}
+			break;
+		}
+
+		case "graph": {
+			const records = await gatherProvenance(root);
+			const graph = buildGraph({ provenance: records });
+			if (values.write) {
+				await writeGraph(root, graph);
+			}
+			const format = String(values.format ?? (isJson ? "json" : "summary")).toLowerCase();
+			if (format === "mermaid") {
+				console.log(renderGraphMermaid(graph));
+			} else if (format === "markdown") {
+				console.log(renderGraphMarkdown(graph));
+			} else if (format === "json") {
+				console.log(renderGraphJson(graph));
+			} else {
+				const stats = graphStats(graph);
+				console.log(
+					`Knowledge Graph: ${stats.nodes} nodes, ${stats.edges} edges, ${stats.coveredFiles} covered files.`,
+				);
+				if (values.write) {
+					console.log("Saved graph artifact to .kaioken/graph.json");
+				}
+			}
+			break;
+		}
+
+		case "gitops": {
+			const action = String(values.action ?? args[0] ?? "status").toLowerCase();
+			if (action === "install-hook") {
+				const res = await installPostCommit(root);
+				if (isJson) console.log(JSON.stringify(res, null, 2));
+				else console.log(`Installed post-commit hook: ${res.installed ? "yes" : "no"} (${res.path})`);
+			} else if (action === "remove-hook") {
+				const res = await removePostCommit(root);
+				if (isJson) console.log(JSON.stringify(res, null, 2));
+				else console.log(`Removed post-commit hook: ${res.removed ? "yes" : "no"} (${res.path})`);
+			} else if (action === "diff") {
+				const diff = await readDiff(root);
+				if (isJson) console.log(JSON.stringify(diff, null, 2));
+				else console.log(diff.diffText || "Working tree clean.");
+			} else {
+				const hook = await hookStatus(root);
+				const wt = await worktreeStatus(root);
+				if (isJson) {
+					console.log(JSON.stringify({ hook, worktree: wt }, null, 2));
+				} else {
+					console.log(
+						`Gitops Status:\n  Post-commit hook: ${hook.installed ? `installed at ${hook.path}` : "not installed"}\n  Worktrees: ${wt.worktrees.length}`,
+					);
+				}
+			}
+			break;
+		}
+
+		case "evals": {
+			const repo = values.repo ? String(values.repo) : undefined;
+			const multiplier = values.multiplier ? parseInt(String(values.multiplier), 10) : 3;
+			const report = await runEval({ multiplier, ...(repo ? { repo } : {}) });
+			if (isJson) {
+				console.log(JSON.stringify(report, null, 2));
+			} else {
+				console.log(formatReport(report));
+			}
+			process.exit(report.passed ? 0 : 1);
+			break;
+		}
+
 		default: {
-			console.error("Usage: node kaioken/bin.ts <scan|symbols|status|search|impact|verify> [--root <path>]");
+			console.error(`Unknown command: "${cmd}". Run "kaioken --help" for usage.`);
 			process.exit(2);
 		}
 	}
 }
 
-main().catch((err) => {
+main().catch((err: unknown) => {
 	console.error(err);
 	process.exit(1);
 });
