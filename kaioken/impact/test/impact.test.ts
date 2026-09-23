@@ -168,4 +168,53 @@ describe("impact prediction", () => {
 		// wrong: a skill is prose, and prose has no provenance record.
 		expect(report.skills.map((s) => s.name)).toEqual(["wire-config"]);
 	});
+
+	it("filters generic names that only appear in comments or strings", async () => {
+		const root = await repo({
+			"src/config.ts": "export const config = { retry: 1 };\n",
+			"src/real.ts":
+				"import { config } from './config.ts';\n\nexport const retries = config.retry;\n",
+			"src/noise.ts": "// config goes here\nconst label = \"config value\";\n",
+		});
+		const { scan: scanResult, index } = await artifacts(root);
+
+		const report = await predictImpact({ root, description: "rename config", scan: scanResult, index });
+		expect(report.symbols.map((s) => s.name)).toEqual(["config"]);
+		expect(report.dependents.map((d) => d.path)).toEqual(["src/real.ts"]);
+	});
+
+	it("ranks import and call-site matches ahead of comment-only mentions", async () => {
+		const root = await repo({
+			"src/config.ts": "export function loadConfig(): string {\n\treturn \"ok\";\n}\n",
+			"src/strong.ts":
+				"import { loadConfig } from './config.ts';\n\nexport function start() {\n\treturn loadConfig();\n}\n",
+			"src/weak.ts": "// loadConfig was considered here\n// nothing to do\n",
+		});
+		const { scan: scanResult, index } = await artifacts(root);
+
+		const report = await predictImpact({ root, description: "rename loadConfig", scan: scanResult, index });
+		expect(report.dependents.map((d) => d.path)[0]).toBe("src/strong.ts");
+		expect(report.dependents.map((d) => d.path)).toContain("src/weak.ts");
+	});
+
+	it("sweeps many files through the bounded reader without dropping hits", async () => {
+		const files: Record<string, string> = {
+			"src/config.ts": "export function loadConfig(): string {\n\treturn \"ok\";\n}\n",
+		};
+		for (let i = 0; i < 60; i++) {
+			files[`src/caller${i}.ts`] =
+				`import { loadConfig } from './config.ts';\n\nexport function run${i}() {\n\treturn loadConfig();\n}\n`;
+		}
+		const root = await repo(files);
+		const { scan: scanResult, index } = await artifacts(root);
+
+		const report = await predictImpact({
+			root,
+			description: "rename loadConfig",
+			scan: scanResult,
+			index,
+			limit: 100,
+		});
+		expect(report.dependents).toHaveLength(60);
+	});
 });

@@ -5,6 +5,14 @@ import { readCardsSafe, readProvenanceIndex } from "@kaioken/provenance";
 import { scan, type ScanResult } from "@kaioken/scan";
 import { loadSkills } from "@kaioken/skills";
 
+interface IndexReExport {
+	name: string;
+	importedName?: string;
+	from: string;
+}
+
+type IndexFile = IndexResult["files"][number] & { reexports?: IndexReExport[] };
+
 export interface ModelClient {
 	complete(opts: { system?: string; prompt: string; purpose?: string; maxOutputTokens?: number }): Promise<string>;
 }
@@ -50,6 +58,121 @@ const EMPTY_INDEX: IndexResult = {
 
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_FILES_SWEPT = 8000;
+const SWEEP_CONCURRENCY = 24;
+
+const GENERIC_NAMES: ReadonlySet<string> = new Set([
+	"id",
+	"ids",
+	"name",
+	"names",
+	"status",
+	"config",
+	"configs",
+	"error",
+	"errors",
+	"data",
+	"info",
+	"type",
+	"types",
+	"value",
+	"values",
+	"item",
+	"items",
+	"result",
+	"results",
+	"option",
+	"options",
+	"param",
+	"params",
+	"input",
+	"inputs",
+	"output",
+	"outputs",
+	"file",
+	"files",
+	"path",
+	"paths",
+	"title",
+	"description",
+	"content",
+	"message",
+	"messages",
+	"code",
+	"text",
+	"util",
+	"utils",
+	"helper",
+	"helpers",
+	"index",
+	"main",
+	"app",
+	"lib",
+	"test",
+	"spec",
+	"default",
+	"create",
+	"update",
+	"delete",
+	"remove",
+	"load",
+	"save",
+	"read",
+	"write",
+	"parse",
+	"format",
+	"handle",
+	"process",
+	"run",
+	"start",
+	"stop",
+	"init",
+	"build",
+	"check",
+	"fetch",
+	"send",
+	"request",
+	"response",
+	"client",
+	"server",
+	"service",
+	"manager",
+	"controller",
+	"handler",
+	"factory",
+	"provider",
+	"module",
+	"component",
+	"element",
+	"node",
+	"list",
+	"map",
+	"key",
+	"keys",
+	"props",
+	"state",
+	"store",
+	"cache",
+	"token",
+	"auth",
+	"user",
+	"users",
+	"settings",
+	"version",
+	"event",
+	"events",
+	"stream",
+	"buffer",
+	"queue",
+	"worker",
+	"model",
+	"view",
+	"router",
+	"route",
+	"plugin",
+	"page",
+	"form",
+	"table",
+]);
 
 export async function predictImpact(input: PredictInput): Promise<ImpactReport> {
 	const oracle = new SymbolOracle(input.index ?? EMPTY_INDEX);
@@ -163,6 +286,22 @@ function stringsOf(value: unknown): string[] {
 		: [];
 }
 
+interface TextMatcher {
+	name: string;
+	generic: boolean;
+	word: RegExp;
+	importLine: RegExp;
+	callSite: RegExp;
+	typeUse: RegExp;
+}
+
+interface SweptFile {
+	path: string;
+	graphLinked: boolean;
+	mentions: string[];
+	strongCount: number;
+}
+
 async function sweep(
 	input: PredictInput,
 	names: ReadonlySet<string>,
@@ -170,47 +309,325 @@ async function sweep(
 ): Promise<{ dependents: Array<{ path: string; mentions: string[] }>; partial: boolean }> {
 	if (names.size === 0) return { dependents: [], partial: false };
 
-	const matchers = [...names].map((name) => ({
-		name,
-		pattern: new RegExp(`(?<![A-Za-z0-9_$])${escapeRegex(name)}(?![A-Za-z0-9_$])`),
-	}));
+	const matchers: TextMatcher[] = [...names].map((name) => buildMatcher(name));
 
 	const candidates = input.scan.files.filter(
-		(file) =>
-			!seeds.has(file.path) &&
-			file.size <= MAX_FILE_BYTES &&
-			!file.binary,
+		(file) => !seeds.has(file.path) && file.size <= MAX_FILE_BYTES && !file.binary,
 	);
 
-	const dependents: Array<{ path: string; mentions: string[] }> = [];
-	let swept = 0;
-	let partial = false;
+	const partial = candidates.length > MAX_FILES_SWEPT;
+	const limited = candidates.slice(0, MAX_FILES_SWEPT);
 
-	for (const file of candidates) {
-		if (swept >= MAX_FILES_SWEPT) {
-			partial = true;
-			break;
-		}
-		swept++;
+	const knownPaths = new Set(input.scan.files.map((file) => file.path));
+	const byPath = indexByPath(input.index);
+	const seedList = seeds;
 
-		let content: string;
+	const readouts = await mapWithConcurrency(limited, SWEEP_CONCURRENCY, async (file) => {
 		try {
-			content = await readFile(join(input.root, file.path), "utf8");
+			const content = await readFile(join(input.root, file.path), "utf8");
+			return { path: file.path, language: file.language, content };
 		} catch {
-			continue;
+			return null;
 		}
+	});
 
-		const hits: string[] = [];
+	const swept: SweptFile[] = [];
+	for (const readout of readouts) {
+		if (!readout) continue;
+		const graphLinked = isGraphLinked(readout.path, readout.content, byPath, knownPaths, seedList);
+		const code = codeOnly(readout.content);
+		const mentions: string[] = [];
+		let strongCount = 0;
 		for (const matcher of matchers) {
-			if (matcher.pattern.test(content)) hits.push(matcher.name);
+			if (!matcher.word.test(readout.content)) continue;
+			const strong = isStrongMatch(readout.content, matcher);
+			if (matcher.generic) {
+				if (!strong) continue;
+				if (!matcher.word.test(code)) continue;
+				mentions.push(matcher.name);
+				strongCount++;
+			} else {
+				mentions.push(matcher.name);
+				if (strong) strongCount++;
+			}
 		}
-		if (hits.length > 0) {
-			dependents.push({ path: file.path, mentions: hits.sort() });
-		}
+		if (mentions.length === 0) continue;
+		mentions.sort();
+		swept.push({ path: readout.path, graphLinked, mentions, strongCount });
 	}
 
-	dependents.sort((a, b) => b.mentions.length - a.mentions.length || a.path.localeCompare(b.path));
-	return { dependents, partial };
+	swept.sort(
+		(a, b) =>
+			Number(b.graphLinked) - Number(a.graphLinked) ||
+			b.strongCount - a.strongCount ||
+			b.mentions.length - a.mentions.length ||
+			a.path.localeCompare(b.path),
+	);
+	return {
+		dependents: swept.map((entry) => ({ path: entry.path, mentions: entry.mentions })),
+		partial,
+	};
+}
+
+function buildMatcher(name: string): TextMatcher {
+	const escaped = escapeRegex(name);
+	const word = new RegExp(`(?<![A-Za-z0-9_$])${escaped}(?![A-Za-z0-9_$])`);
+	return {
+		name,
+		generic: isGenericName(name),
+		word,
+		importLine: new RegExp(`(^|\\n)[^\\n]*\\b(?:import|export|require)\\b[^\\n]*${
+			`(?<![A-Za-z0-9_$])${escaped}(?![A-Za-z0-9_$])`
+		}`),
+		callSite: new RegExp(`(?<![A-Za-z0-9_$])${escaped}(?![A-Za-z0-9_$])\\s*\\(`),
+		typeUse: new RegExp(
+			`(?:[:<|,]\\s*|extends\\s+|implements\\s+|\\bas\\s+|\\bnew\\s+)(?<![A-Za-z0-9_$])${escaped}(?![A-Za-z0-9_$])`,
+		),
+	};
+}
+
+function isGenericName(name: string): boolean {
+	if (name.length <= 4) return true;
+	return GENERIC_NAMES.has(name.toLowerCase());
+}
+
+function isStrongMatch(content: string, matcher: TextMatcher): boolean {
+	return matcher.importLine.test(content) || matcher.callSite.test(content) || matcher.typeUse.test(content);
+}
+
+function codeOnly(content: string): string {
+	let out = "";
+	let i = 0;
+	let lineStart = true;
+	while (i < content.length) {
+		const char = content[i] as string;
+		const next = (content[i + 1] ?? "") as string;
+		if (char === "/" && next === "/") {
+			while (i < content.length && content[i] !== "\n") i++;
+			continue;
+		}
+		if (char === "/" && next === "*") {
+			i += 2;
+			while (i < content.length && !(content[i] === "*" && content[i + 1] === "/")) {
+				if (content[i] === "\n") {
+					out += "\n";
+					lineStart = true;
+				}
+				i++;
+			}
+			i += 2;
+			out += " ";
+			continue;
+		}
+		if (char === "#" && lineStart) {
+			while (i < content.length && content[i] !== "\n") i++;
+			continue;
+		}
+		if (char === "#" && next === " " && !isWordChar(content[i - 1] ?? "\n")) {
+			while (i < content.length && content[i] !== "\n") i++;
+			continue;
+		}
+		if (char === '"' || char === "'" || char === "`") {
+			const quote = char;
+			out += " ";
+			i++;
+			while (i < content.length) {
+				const inner = content[i] as string;
+				if (inner === "\\") {
+					i += 2;
+					continue;
+				}
+				if (inner === "\n" && quote !== "`") break;
+				if (inner === quote) {
+					i++;
+					break;
+				}
+				if (inner === "\n") out += "\n";
+				i++;
+			}
+			out += " ";
+			lineStart = false;
+			continue;
+		}
+		out += char;
+		lineStart = char === "\n";
+		i++;
+	}
+	return out;
+}
+
+function isWordChar(char: string): boolean {
+	return /[A-Za-z0-9_$]/.test(char);
+}
+
+function indexByPath(index: IndexResult | null): Map<string, IndexFile> {
+	const byPath = new Map<string, IndexFile>();
+	if (!index) return byPath;
+	for (const file of index.files) byPath.set(file.path, file as IndexFile);
+	return byPath;
+}
+
+function isGraphLinked(
+	path: string,
+	content: string,
+	byPath: ReadonlyMap<string, IndexFile>,
+	knownPaths: ReadonlySet<string>,
+	seeds: ReadonlySet<string>,
+): boolean {
+	if (seeds.size === 0) return false;
+	for (const spec of extractImportSpecifiers(content)) {
+		const target = resolveImportSpec(path, spec, knownPaths);
+		if (target && seeds.has(target)) return true;
+	}
+	const record = byPath.get(path);
+	if (record?.reexports) {
+		for (const re of record.reexports) {
+			const target = resolveImportSpec(path, re.from, knownPaths);
+			if (target && seeds.has(target)) return true;
+		}
+	}
+	return false;
+}
+
+function extractImportSpecifiers(content: string): string[] {
+	const specs: string[] = [];
+	const push = (spec: string): void => {
+		const trimmed = spec.trim();
+		if (trimmed) specs.push(trimmed);
+	};
+	let match: RegExpExecArray | null;
+	const fromRe = /(?:import|export)\s+(?:type\s+)?[^\n;]*?\sfrom\s*['"]([^'"]+)['"]/g;
+	while ((match = fromRe.exec(content)) !== null) push(match[1] as string);
+	const sideEffectRe = /import\s*['"]([^'"]+)['"]/g;
+	while ((match = sideEffectRe.exec(content)) !== null) push(match[1] as string);
+	const dynamicRe = /(?:import\s*\(\s*|require\s*\(\s*)['"]([^'"]+)['"]\s*\)/g;
+	while ((match = dynamicRe.exec(content)) !== null) push(match[1] as string);
+	const pyFromRe = /^\s*from\s+([.\w]+)\s+import\b/gm;
+	while ((match = pyFromRe.exec(content)) !== null) push(match[1] as string);
+	const pyImportRe = /^\s*import\s+([.\w]+(?:\s*,\s*[.\w]+)*)/gm;
+	while ((match = pyImportRe.exec(content)) !== null) {
+		const group = match[1] as string;
+		for (const part of group.split(",")) {
+			const head = part.split(/\s+as\s+/)[0]?.trim() ?? "";
+			if (/^[.\w]+$/.test(head)) push(head);
+		}
+	}
+	return specs;
+}
+
+function resolveImportSpec(
+	importer: string,
+	spec: string,
+	known: ReadonlySet<string>,
+): string | null {
+	const trimmed = spec.trim();
+	if (!trimmed || trimmed.startsWith("node:") || trimmed.startsWith("http:") || trimmed.startsWith("https:")) {
+		return null;
+	}
+	if (/^[\w.]+$/.test(trimmed) && trimmed.includes(".") && !trimmed.includes("/")) {
+		const pyResolved = resolvePythonModule(importer, trimmed, known);
+		if (pyResolved) return pyResolved;
+	}
+	if (trimmed.startsWith(".")) {
+		const dir = importer.includes("/") ? importer.slice(0, importer.lastIndexOf("/")) : "";
+		const raw = dir ? `${dir}/${trimmed}` : trimmed;
+		return tryResolveBase(normalizePosix(raw), known);
+	}
+	const stripped = trimmed.replace(/^@\//, "").replace(/^~\//, "").replace(/^\//, "");
+	const direct = tryResolveBase(normalizePosix(stripped), known);
+	if (direct) return direct;
+	if (/^[A-Za-z0-9_./-]+$/.test(stripped) && stripped.includes("/")) {
+		const suffix = `/${stripped}`;
+		for (const path of known) {
+			if (path === stripped || path.endsWith(suffix)) return path;
+			if (path.endsWith(`${suffix}.ts`) || path.endsWith(`${suffix}.tsx`)) return path;
+			if (path.endsWith(`${suffix}.js`) || path.endsWith(`${suffix}.py`)) return path;
+		}
+	}
+	return null;
+}
+
+function resolvePythonModule(importer: string, spec: string, known: ReadonlySet<string>): string | null {
+	const leadingMatch = /^\.+/.exec(spec);
+	const leading = leadingMatch ? (leadingMatch[0] as string).length : 0;
+	const rest = leading > 0 ? spec.slice(leading) : spec;
+	const dir = importer.includes("/") ? importer.slice(0, importer.lastIndexOf("/")) : "";
+	if (leading > 0) {
+		const parts = dir ? dir.split("/") : [];
+		const up = leading - 1;
+		const baseParts = parts.slice(0, Math.max(0, parts.length - up));
+		const restParts = rest ? rest.split(".").filter((part) => part.length > 0) : [];
+		const base = [...baseParts, ...restParts].join("/");
+		return tryResolveBase(base, known) ?? tryPythonCandidates(base, known);
+	}
+	const dotted = spec.split(".").join("/");
+	return tryResolveBase(dotted, known) ?? tryPythonCandidates(dotted, known);
+}
+
+function tryPythonCandidates(base: string, known: ReadonlySet<string>): string | null {
+	const candidates = [`${base}.py`, `${base}/__init__.py`];
+	for (const candidate of candidates) {
+		if (known.has(candidate)) return candidate;
+	}
+	return null;
+}
+
+function tryResolveBase(base: string, known: ReadonlySet<string>): string | null {
+	const candidates = [
+		base,
+		`${base}.ts`,
+		`${base}.tsx`,
+		`${base}.js`,
+		`${base}.jsx`,
+		`${base}.py`,
+		`${base}.go`,
+		`${base}.rs`,
+		`${base}/index.ts`,
+		`${base}/index.tsx`,
+		`${base}/index.js`,
+		`${base}/index.jsx`,
+		`${base}/__init__.py`,
+	];
+	for (const candidate of candidates) {
+		if (known.has(candidate)) return candidate;
+	}
+	return null;
+}
+
+function normalizePosix(raw: string): string {
+	const parts: string[] = [];
+	for (const seg of raw.split("/")) {
+		if (seg === "" || seg === ".") continue;
+		if (seg === "..") parts.pop();
+		else parts.push(seg);
+	}
+	return parts.join("/");
+}
+
+async function mapWithConcurrency<T, R>(
+	items: ReadonlyArray<T>,
+	limit: number,
+	fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+	const out: R[] = new Array<R>(items.length);
+	let next = 0;
+	const workerCount = Math.min(Math.max(1, limit), items.length);
+	const workers: Array<Promise<void>> = [];
+	for (let w = 0; w < workerCount; w++) {
+		workers.push(
+			(async (): Promise<void> => {
+				while (true) {
+					const current = next;
+					next += 1;
+					if (current >= items.length) return;
+					const item = items[current] as T;
+					out[current] = await fn(item, current);
+				}
+			})(),
+		);
+	}
+	await Promise.all(workers);
+	return out;
 }
 
 async function affectedModules(
