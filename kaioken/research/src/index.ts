@@ -8,8 +8,14 @@ export {
 	researchDir,
 	writeResearchDocument,
 } from "./artifact.ts";
-export { dedupeHits, isFetchableUrl, numberSources } from "./ports.ts";
-export type { WebFetchPort, WebFetchResult, WebHit, WebSearchPort } from "./ports.ts";
+export {
+	dedupeHits,
+	isFetchableUrl,
+	isFetchableUrlResolved,
+	isPrivateIp,
+	numberSources,
+} from "./ports.ts";
+export type { DnsLookupFn, WebFetchPort, WebFetchResult, WebHit, WebSearchPort } from "./ports.ts";
 export { excerptOf, fenceSource, htmlToText, injectionPatterns } from "./sanitize.ts";
 export { buildPrompt, gatherSources, generateResearch, pathFor } from "./run.ts";
 export type { GatherInput, GatherResult, GenerateInput, GenerateResult } from "./run.ts";

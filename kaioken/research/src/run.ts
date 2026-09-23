@@ -1,6 +1,15 @@
 import { createHash } from "node:crypto";
 import { extractJson, type ModelClient } from "@kaioken/modelport";
-import { dedupeHits, isFetchableUrl, numberSources, type WebFetchPort, type WebHit, type WebSearchPort } from "./ports.ts";
+import {
+	dedupeHits,
+	type DnsLookupFn,
+	isFetchableUrl,
+	isFetchableUrlResolved,
+	numberSources,
+	type WebFetchPort,
+	type WebHit,
+	type WebSearchPort,
+} from "./ports.ts";
 import { excerptOf, fenceSource, htmlToText, injectionPatterns } from "./sanitize.ts";
 import type { ResearchDepth, ResearchDocument, ResearchSource, ResearchVerification, SourceExcerpt } from "./types.ts";
 import { verifyCitations } from "./verify.ts";
@@ -43,6 +52,10 @@ export interface GatherInput {
 	fetch: WebFetchPort;
 	/** Extra queries to run, e.g. reformulations. Combined with the question. */
 	extraQueries?: readonly string[];
+	/** Optional DNS lookup hook for testing SSRF / DNS rebinding evasion. */
+	dnsLookup?: DnsLookupFn;
+	/** Concurrency limit for page fetching (default: 4). */
+	concurrency?: number;
 }
 
 export interface GatherResult {
@@ -52,6 +65,28 @@ export interface GatherResult {
 	injectionHits: { url: string; patterns: string[] }[];
 	/** Hits considered but not fetched (blocked, duplicate, or out of budget). */
 	skipped: { url: string; reason: string }[];
+}
+
+/** Bounded concurrency limiter preserving original item indices. */
+async function mapConcurrent<T, R>(
+	items: readonly T[],
+	limit: number,
+	fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+	if (items.length === 0) return [];
+	const results = new Array<R>(items.length);
+	let nextIndex = 0;
+
+	async function worker() {
+		while (nextIndex < items.length) {
+			const index = nextIndex++;
+			results[index] = await fn(items[index] as T, index);
+		}
+	}
+
+	const workers = Array.from({ length: Math.min(limit, items.length) }, () => worker());
+	await Promise.all(workers);
+	return results;
 }
 
 /**
@@ -86,20 +121,40 @@ export async function gatherSources(input: GatherInput): Promise<GatherResult> {
 	const excerpts: SourceExcerpt[] = [];
 	const injectionHits: GatherResult["injectionHits"] = [];
 
-	for (const hit of unique) {
-		if (sources.length >= input.depth.targetSources) break;
+	// Filter candidate hits up to targetSources * 2
+	const candidateHits = unique.slice(0, input.depth.targetSources * 2);
 
-		if (!isFetchableUrl(hit.url)) {
-			skipped.push({ url: hit.url, reason: "not fetchable (blocked or non-http)" });
-			continue;
+	// Validate fetchability (including DNS resolution) concurrently
+	const concurrency = Math.max(1, Math.min(input.concurrency ?? 4, 6));
+	const validationResults = await mapConcurrent(candidateHits, concurrency, async (hit) => {
+		const isSafe = await isFetchableUrlResolved(hit.url, input.dnsLookup);
+		return { hit, isSafe };
+	});
+
+	const fetchCandidates: WebHit[] = [];
+	for (const { hit, isSafe } of validationResults) {
+		if (!isSafe) {
+			skipped.push({ url: hit.url, reason: "not fetchable (blocked, non-http, or private/rebound IP)" });
+		} else {
+			fetchCandidates.push(hit);
 		}
+	}
 
-		let result: Awaited<ReturnType<WebFetchPort["fetch"]>>;
+	// Fetch candidates with bounded concurrency (4-6), preserving result ordering
+	const fetchResults = await mapConcurrent(fetchCandidates, concurrency, async (hit) => {
 		try {
-			result = await input.fetch.fetch(hit.url);
+			const result = await input.fetch.fetch(hit.url);
+			return { hit, result };
 		} catch (error) {
-			result = { error: error instanceof Error ? error.message : String(error) };
+			return {
+				hit,
+				result: { error: error instanceof Error ? error.message : String(error) },
+			};
 		}
+	});
+
+	for (const { hit, result } of fetchResults) {
+		if (sources.length >= input.depth.targetSources) break;
 
 		if (result.error || !result.body) {
 			sources.push({

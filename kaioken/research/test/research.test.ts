@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { ModelClient, ModelRequest } from "@kaioken/modelport";
-import { dedupeHits, isFetchableUrl, numberSources, type WebFetchPort, type WebSearchPort } from "../src/ports.ts";
+import {
+	dedupeHits,
+	isFetchableUrl,
+	isFetchableUrlResolved,
+	isPrivateIp,
+	numberSources,
+	type WebFetchPort,
+	type WebSearchPort,
+} from "../src/ports.ts";
 import { excerptOf, fenceSource, htmlToText, injectionPatterns } from "../src/sanitize.ts";
 import { uncitedSentences, verifyCitations } from "../src/verify.ts";
 import { buildPrompt, gatherSources, generateResearch, pathFor } from "../src/run.ts";
@@ -93,6 +101,23 @@ describe("research: URL safety", () => {
 	it("accepts a public IPv6 address", () => {
 		expect(isFetchableUrl("http://[2001:db8::1]/")).toBe(true);
 	});
+
+	it("rejects host that resolves via DNS to private IPv4 or cloud metadata", async () => {
+		const rebindDns = async (host: string) => {
+			if (host === "rebind.example.com") return "169.254.169.254";
+			if (host === "local.example.com") return "127.0.0.1";
+			return "93.184.216.34";
+		};
+
+		expect(await isFetchableUrlResolved("https://rebind.example.com/latest/meta-data", rebindDns)).toBe(false);
+		expect(await isFetchableUrlResolved("https://local.example.com/status", rebindDns)).toBe(false);
+		expect(await isFetchableUrlResolved("https://safe.example.com/page", rebindDns)).toBe(true);
+	});
+
+	it("rejects host that resolves via DNS to private IPv6", async () => {
+		const rebindV6 = async () => "fe80::1";
+		expect(await isFetchableUrlResolved("https://rebind6.example.com/", rebindV6)).toBe(false);
+	});
 });
 
 describe("research: hit deduplication", () => {
@@ -154,6 +179,21 @@ describe("research: sanitization", () => {
 
 	it("returns empty for a page of nothing but markup", () => {
 		expect(htmlToText("<div><span></span></div>")).toBe("");
+	});
+
+	it("removes scripts with complex attributes and whitespace", () => {
+		const html = '<p>Safe</p><script type="module" src="evil.js" async data-test=">">\nalert(1);\n</script><p>Text</p>';
+		expect(htmlToText(html)).toBe("Safe\nText");
+	});
+
+	it("handles nested tags, attributes with quotes, and unclosed tags", () => {
+		const html = '<div class="test"><p title="hello > world">A <b>bold <i>and italic</i></b> statement</p>';
+		expect(htmlToText(html)).toBe("A bold and italic statement");
+	});
+
+	it("handles style blocks with css rules and braces", () => {
+		const html = '<style>body { background: url("image.png"); content: "<test>"; }</style><p>Visible</p>';
+		expect(htmlToText(html)).toBe("Visible");
 	});
 
 	it("bounds an excerpt and marks truncation", () => {
@@ -320,6 +360,69 @@ describe("research: gathering", () => {
 		});
 		expect(gathered.sources).toHaveLength(0);
 		expect(gathered.skipped[0]?.reason).toContain("not fetchable");
+	});
+
+	it("skips hits that resolve to private IPs during gatherSources", async () => {
+		const rebindDns = async (host: string) => {
+			if (host === "rebind.example.com") return "169.254.169.254";
+			return "93.184.216.34";
+		};
+
+		const gathered = await gatherSources({
+			question: "q",
+			depth,
+			search: searchOf([
+				{ url: "https://rebind.example.com/metadata", title: "Rebind" },
+				{ url: "https://safe.example.com/docs", title: "Safe" },
+			]),
+			fetch: {
+				async fetch(url) {
+					return { body: `<p>Content for ${url}</p>`, title: "Title" };
+				},
+			},
+			dnsLookup: rebindDns,
+		});
+
+		expect(gathered.skipped.some((s) => s.url === "https://rebind.example.com/metadata")).toBe(true);
+		expect(gathered.sources).toHaveLength(1);
+		expect(gathered.sources[0]?.url).toBe("https://safe.example.com/docs");
+	});
+
+	it("fetches pages concurrently up to concurrency limit while preserving order", async () => {
+		let currentActive = 0;
+		let maxActive = 0;
+
+		const fetch: WebFetchPort = {
+			async fetch(url: string) {
+				currentActive++;
+				if (currentActive > maxActive) maxActive = currentActive;
+				// Add small async delay
+				await new Promise((resolve) => setTimeout(resolve, 10));
+				currentActive--;
+				return { body: `<p>Page ${url}</p>`, title: `Title ${url}` };
+			},
+		};
+
+		const urls = [
+			"https://example.com/1",
+			"https://example.com/2",
+			"https://example.com/3",
+			"https://example.com/4",
+			"https://example.com/5",
+		];
+
+		const gathered = await gatherSources({
+			question: "q",
+			depth: { ...depth, targetSources: 5 },
+			search: searchOf(urls.map((u) => ({ url: u, title: u }))),
+			fetch,
+			concurrency: 4,
+			dnsLookup: async () => "93.184.216.34",
+		});
+
+		expect(maxActive).toBeGreaterThan(1);
+		expect(maxActive).toBeLessThanOrEqual(4);
+		expect(gathered.sources.map((s) => s.url)).toEqual(urls);
 	});
 
 	it("survives a search that throws", async () => {

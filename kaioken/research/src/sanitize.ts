@@ -10,43 +10,136 @@ import type { SourceExcerpt } from "./types.ts";
  * can re-enter the evidence set without being fetched and sanitised again.
  */
 
+const SKIP_TAGS = new Set(["script", "style", "noscript", "template", "svg"]);
+const BLOCK_TAGS = new Set([
+	"p",
+	"div",
+	"li",
+	"tr",
+	"h1",
+	"h2",
+	"h3",
+	"h4",
+	"h5",
+	"h6",
+	"section",
+	"article",
+	"blockquote",
+	"header",
+	"footer",
+	"nav",
+	"main",
+	"aside",
+]);
+
 /**
- * Strip markup down to readable text.
+ * Strip markup down to readable text using a deterministic character state machine.
  *
  * Script and style contents are removed whole — their text is code, not
  * prose, and leaving it in would hand the model instructions disguised as
  * noise. Tags are then dropped, entities decoded, and whitespace collapsed.
  */
 export function htmlToText(html: string): string {
-	let text = html;
+	let out = "";
+	let i = 0;
+	const n = html.length;
 
-	// Whole-element removal before tag stripping: their inner text must not
-	// survive as prose.
-	for (const tag of ["script", "style", "noscript", "template", "svg"]) {
-		text = text.replace(new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?</${tag}>`, "gi"), " ");
-		text = text.replace(new RegExp(`<${tag}\\b[^>]*/?>`, "gi"), " ");
+	while (i < n) {
+		// Check for HTML comment <!--
+		if (html.startsWith("<!--", i)) {
+			const end = html.indexOf("-->", i + 4);
+			if (end === -1) {
+				break;
+			}
+			i = end + 3;
+			out += " ";
+			continue;
+		}
+
+		const ch = html[i];
+		if (ch === "<") {
+			i++;
+			let isClosing = false;
+			if (i < n && html[i] === "/") {
+				isClosing = true;
+				i++;
+			}
+
+			// Read tag name
+			let tagName = "";
+			while (i < n && /[a-zA-Z0-9:-]/.test(html[i]!)) {
+				tagName += html[i]!;
+				i++;
+			}
+			tagName = tagName.toLowerCase();
+
+			// If it is a skip tag (script, style, noscript, etc.) and it's an opening tag
+			if (!isClosing && SKIP_TAGS.has(tagName)) {
+				// Read until closing '>' of opening tag
+				while (i < n && html[i] !== ">") {
+					i++;
+				}
+				if (i < n) i++;
+
+				// Skip until </tagName>
+				const closeNeedle = `</${tagName}`;
+				while (i < n) {
+					const idx = html.toLowerCase().indexOf(closeNeedle, i);
+					if (idx === -1) {
+						i = n;
+						break;
+					}
+					const endTagIdx = html.indexOf(">", idx + closeNeedle.length);
+					if (endTagIdx === -1) {
+						i = n;
+						break;
+					}
+					i = endTagIdx + 1;
+					break;
+				}
+				out += " ";
+				continue;
+			}
+
+			// Otherwise, read attributes until closing '>'
+			let inQuote: string | null = null;
+			while (i < n) {
+				const c = html[i]!;
+				if (inQuote) {
+					if (c === inQuote) {
+						inQuote = null;
+					}
+				} else if (c === '"' || c === "'") {
+					inQuote = c;
+				} else if (c === ">") {
+					i++;
+					break;
+				}
+				i++;
+			}
+
+			// Emit block boundary newline
+			if (tagName === "br" || (isClosing && BLOCK_TAGS.has(tagName))) {
+				out += "\n";
+			} else {
+				out += " ";
+			}
+			continue;
+		}
+
+		out += ch;
+		i++;
 	}
 
-	// Comments can carry anything, including conditional markup.
-	text = text.replace(/<!--[\s\S]*?-->/g, " ");
+	const decoded = decodeEntities(out);
 
-	// Block-level boundaries become newlines so paragraphs survive as paragraphs.
-	text = text.replace(/<\/(p|div|li|tr|h[1-6]|section|article|blockquote)>/gi, "\n");
-	text = text.replace(/<br\s*\/?>/gi, "\n");
-
-	// Everything else that looks like a tag is dropped, never rendered.
-	text = text.replace(/<[^>]+>/g, " ");
-
-	text = decodeEntities(text);
-
-	// Collapse the whitespace the stripping left behind.
-	text = text
+	// Collapse whitespace and empty lines
+	return decoded
 		.split("\n")
 		.map((line) => line.replace(/\s+/g, " ").trim())
 		.filter(Boolean)
-		.join("\n");
-
-	return text.trim();
+		.join("\n")
+		.trim();
 }
 
 function decodeEntities(text: string): string {

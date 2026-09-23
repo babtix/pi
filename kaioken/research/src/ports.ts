@@ -1,3 +1,4 @@
+import { lookup } from "node:dns/promises";
 import type { ResearchSource } from "./types.ts";
 
 /**
@@ -109,11 +110,77 @@ export function isFetchableUrl(url: string): boolean {
 	return true;
 }
 
+export type DnsLookupFn = (
+	hostname: string,
+) => Promise<Array<{ address: string; family: number }> | string>;
+
+/**
+ * Resolution-time validation against SSRF and DNS rebinding attacks.
+ *
+ * Note on residual limitation:
+ * Validating at lookup time before fetch prevents DNS rebinding and internal IP access
+ * for typical requests. However, unless the underlying HTTP client pins the socket connection
+ * to the exact resolved IP, a theoretical TOCTOU window exists if the remote nameserver returns
+ * a 0-second TTL.
+ */
+export async function isFetchableUrlResolved(
+	url: string,
+	lookupFn?: DnsLookupFn,
+): Promise<boolean> {
+	if (!isFetchableUrl(url)) return false;
+
+	let parsed: URL;
+	try {
+		parsed = new URL(url);
+	} catch {
+		return false;
+	}
+
+	const raw = parsed.hostname.toLowerCase();
+	const host = raw.startsWith("[") && raw.endsWith("]") ? raw.slice(1, -1) : raw;
+
+	// If hostname is already a literal IP, isFetchableUrl already validated it
+	if (/^[\d.]+$/.test(host) || host.includes(":")) {
+		return !isPrivateIp(host);
+	}
+
+	try {
+		if (lookupFn) {
+			const res = await lookupFn(host);
+			if (typeof res === "string") {
+				if (isPrivateIp(res)) return false;
+			} else if (Array.isArray(res)) {
+				for (const entry of res) {
+					if (isPrivateIp(entry.address)) return false;
+				}
+			}
+		} else {
+			const addresses = await lookup(host, { all: true });
+			for (const addr of addresses) {
+				if (isPrivateIp(addr.address)) return false;
+			}
+		}
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export function isPrivateIp(ip: string): boolean {
+	const clean = ip.trim().toLowerCase();
+	if (clean === "0.0.0.0" || /^0\./.test(clean)) return true;
+	if (clean.includes(":")) {
+		return isPrivateIpv6(clean);
+	}
+	return isPrivateIpv4(clean);
+}
+
 /**
  * Loopback, private and link-local IPv4, by literal octet: a search result must
  * never aim the fetcher at the machine's own services.
  */
 function isPrivateIpv4(host: string): boolean {
+	if (host === "0.0.0.0" || /^0\./.test(host)) return true;
 	if (/^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host)) return true;
 	if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true;
 	return /^169\.254\./.test(host);
