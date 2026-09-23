@@ -1,5 +1,6 @@
 import { type IndexResult, SymbolOracle } from "@kaioken/index";
 import { type Depth, depthFor, extractJson, type ModelClient } from "@kaioken/modelport";
+import { readCards } from "./artifact.ts";
 import { gatherModuleEvidence, type ModuleEvidence } from "./evidence.ts";
 import type { Card, CardEntryPoint, CardVerification, Module, ModulePlan } from "./types.ts";
 import { moduleScope } from "./validate.ts";
@@ -61,7 +62,22 @@ export async function generateCard(
 		maxOutputTokens: depth.maxOutputTokens,
 	});
 
-	let draft = parseCard(reply);
+	let draft: CardDraft;
+	try {
+		draft = parseCard(reply);
+	} catch (err) {
+		try {
+			const repairReply = await client.complete({
+				purpose: "card-repair-json",
+				system: "You fix malformed JSON. Return valid JSON only, conforming to the requested schema.",
+				prompt: `Your previous reply could not be parsed as JSON: ${err instanceof Error ? err.message : String(err)}\n\nRaw output:\n${reply}`,
+				maxOutputTokens: depth.maxOutputTokens,
+			});
+			draft = parseCard(repairReply);
+		} catch {
+			draft = { summary: "", keyPoints: [], entryPoints: [] };
+		}
+	}
 	let verification = verifyCard(draft, module, evidence, oracle);
 
 	// Above the breadth threshold the multiplier stops buying length and starts
@@ -235,7 +251,17 @@ function buildCorrectionPrompt(
 }
 
 function parseCard(reply: string): CardDraft {
-	const raw = extractJson<Record<string, unknown>>(reply);
+	let raw: Record<string, unknown>;
+	try {
+		raw = extractJson<Record<string, unknown>>(reply);
+	} catch (err) {
+		const stripped = reply.replace(/,\s*([}\]])/g, "$1");
+		try {
+			raw = extractJson<Record<string, unknown>>(stripped);
+		} catch {
+			throw err;
+		}
+	}
 
 	const entryPoints = Array.isArray(raw.entryPoints)
 		? (raw.entryPoints as unknown[])
@@ -276,10 +302,29 @@ export async function generateCards(
 		 */
 		knownFiles?: ReadonlyMap<string, string>;
 		onProgress?: (moduleId: string, done: number, total: number) => void;
+		/**
+		 * When true, only regenerate cards whose source files changed or are missing.
+		 */
+		incremental?: boolean;
+		/** Existing cards to consider for reuse when incremental is enabled. */
+		existingCards?: readonly Card[];
+		/** Repository root directory to load existing cards from if existingCards is not provided. */
+		root?: string;
 	} = {},
 ): Promise<CardResult[]> {
 	const oracle = new SymbolOracle(index ?? emptyIndex());
 	const wanted = options.only && options.only.length > 0 ? new Set(options.only) : null;
+	const depth = depthFor(options.multiplier ?? 1);
+
+	let existing: readonly Card[] = options.existingCards ?? [];
+	if (options.incremental && existing.length === 0 && options.root) {
+		try {
+			existing = await readCards(options.root);
+		} catch {
+			existing = [];
+		}
+	}
+	const existingByModule = new Map<string, Card>(existing.map((c) => [c.moduleId, c]));
 
 	// The plan is authoritative: cards are generated for exactly the modules the
 	// plan declares, in the order it declares them. Editing the plan is how you
@@ -290,6 +335,24 @@ export async function generateCards(
 	for (let i = 0; i < modules.length; i++) {
 		const module = modules[i] as Module;
 		options.onProgress?.(module.id, i, modules.length);
+
+		if (options.incremental) {
+			const existingCard = existingByModule.get(module.id);
+			if (isCardFresh(existingCard, module, options.knownFiles)) {
+				const scope = moduleScope(module);
+				const evidence = gatherModuleEvidence(index, scope, {
+					maxDeclarationsPerFile: depth.declarationsPerFile,
+					...(options.knownFiles ? { knownFiles: options.knownFiles } : {}),
+				});
+				out.push({
+					card: existingCard!,
+					evidence,
+					reply: "",
+				});
+				continue;
+			}
+		}
+
 		out.push(
 			await generateCard(module, index, client, {
 				...(options.multiplier !== undefined ? { multiplier: options.multiplier } : {}),
@@ -299,6 +362,29 @@ export async function generateCards(
 		);
 	}
 	return out;
+}
+
+function isCardFresh(
+	card: Card | undefined,
+	module: Module,
+	knownFiles?: ReadonlyMap<string, string>,
+): boolean {
+	if (!card) return false;
+	const scope = moduleScope(module);
+	if (card.sources.length !== scope.length) return false;
+	const sourcePaths = new Set(card.sources.map((s) => s.path));
+	for (const path of scope) {
+		if (!sourcePaths.has(path)) return false;
+	}
+	if (knownFiles) {
+		for (const source of card.sources) {
+			const currentHash = knownFiles.get(source.path);
+			if (currentHash === undefined || currentHash !== source.hash) {
+				return false;
+			}
+		}
+	}
+	return true;
 }
 
 /**

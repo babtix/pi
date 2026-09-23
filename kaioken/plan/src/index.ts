@@ -19,7 +19,7 @@ export type {
 	ModuleFileEvidence,
 	RepositoryEvidence,
 } from "./evidence.ts";
-export { buildPrompt, proposeModulePlan } from "./propose.ts";
+export { buildPrompt, proposeHeuristicModules, proposeModulePlan } from "./propose.ts";
 export type { ProposeResult } from "./propose.ts";
 export type {
 	Card,

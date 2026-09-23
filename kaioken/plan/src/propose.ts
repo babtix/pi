@@ -28,6 +28,7 @@ export interface ProposeResult {
 	evidence: RepositoryEvidence;
 	/** Raw reply, kept so a failed run is inspectable rather than opaque. */
 	reply: string;
+	source: "model" | "heuristic";
 }
 
 /**
@@ -35,40 +36,107 @@ export interface ProposeResult {
  *
  * Evidence first, model second: the repository is summarised deterministically,
  * the model is asked to interpret that summary, and the answer is then checked
- * back against the scan. The model never sees the filesystem and never decides
- * what exists.
+ * back against the scan. If no model is provided or model completion fails,
+ * a deterministic structural clustering fallback groups files by directory/package.
  */
 export async function proposeModulePlan(
 	scan: ScanResult,
 	index: IndexResult | null,
-	client: ModelClient,
+	client?: ModelClient | null,
 	options: { multiplier?: number } = {},
 ): Promise<ProposeResult> {
 	const depth = depthFor(options.multiplier ?? 1);
 	const evidence = gatherEvidence(scan, index);
 
-	const reply = await client.complete({
-		purpose: "module-plan",
-		system: SYSTEM,
-		prompt: buildPrompt(evidence, depth),
-		maxOutputTokens: depth.maxOutputTokens,
-	});
+	let reply = "";
+	let modules: (Module | null)[] = [];
+	let source: "model" | "heuristic" = "model";
 
-	const parsed = extractJson<{ modules?: unknown }>(reply);
-	const modules = Array.isArray(parsed.modules) ? parsed.modules.map(coerceModule) : [];
+	if (!client) {
+		source = "heuristic";
+		modules = proposeHeuristicModules(scan, evidence);
+	} else {
+		try {
+			reply = await client.complete({
+				purpose: "module-plan",
+				system: SYSTEM,
+				prompt: buildPrompt(evidence, depth),
+				maxOutputTokens: depth.maxOutputTokens,
+			});
+			const parsed = extractJson<{ modules?: unknown }>(reply);
+			modules = Array.isArray(parsed.modules) ? parsed.modules.map(coerceModule) : [];
+		} catch {
+			source = "heuristic";
+			modules = proposeHeuristicModules(scan, evidence);
+		}
+	}
 
 	const raw: ModulePlan = {
 		version: 1,
 		generatedAt: new Date().toISOString(),
 		multiplier: depth.multiplier,
 		modules: modules.filter((m): m is Module => m !== null),
+		source,
 	};
 	// A directory named where a file was asked for is resolved from the scan
 	// rather than rejected — the intent is unambiguous and the expansion is
 	// deterministic.
 	const plan = expandDirectories(raw, scan);
 
-	return { plan, validation: validatePlan(plan, scan), evidence, reply };
+	return { plan, validation: validatePlan(plan, scan), evidence, reply, source };
+}
+
+/**
+ * Deterministic structural clustering fallback when no model is available or model completion fails.
+ * Groups files by package boundaries (e.g. packages/foo, kaioken/plan) or top-level directories.
+ */
+export function proposeHeuristicModules(scan: ScanResult, _evidence?: RepositoryEvidence): Module[] {
+	const eligibleFiles = scan.files.filter(
+		(f) => !f.binary && !f.risk.includes("generated") && !f.risk.includes("lockfile"),
+	);
+	if (eligibleFiles.length === 0) {
+		return [];
+	}
+
+	const groups = new Map<string, string[]>();
+	const monorepoPrefixes = new Set(["packages", "crates", "modules", "libs", "services", "apps", "kaioken"]);
+
+	for (const file of eligibleFiles) {
+		const normalized = file.path.split("\\").join("/");
+		const parts = normalized.split("/");
+		let groupKey: string;
+		if (parts.length === 1) {
+			groupKey = "root";
+		} else if (parts.length > 2 && monorepoPrefixes.has(parts[0]!.toLowerCase())) {
+			groupKey = `${parts[0]}/${parts[1]}`;
+		} else {
+			groupKey = parts[0]!;
+		}
+
+		let list = groups.get(groupKey);
+		if (!list) {
+			list = [];
+			groups.set(groupKey, list);
+		}
+		list.push(normalized);
+	}
+
+	const modules: Module[] = [];
+	for (const [groupKey, files] of groups.entries()) {
+		const id = groupKey.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+		const name = groupKey
+			.split(/[/_-]+/)
+			.map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+			.join(" ");
+		modules.push({
+			id: id || "module",
+			name: name || groupKey,
+			purpose: `Structural module for ${groupKey}`,
+			files: files.sort(),
+		});
+	}
+
+	return modules;
 }
 
 export function buildPrompt(evidence: RepositoryEvidence, depth: Depth): string {

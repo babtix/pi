@@ -26,6 +26,8 @@ export interface ModulePlan {
 	/** Multiplier the plan was proposed at. Recorded so a rerun is comparable. */
 	multiplier: number;
 	modules: Module[];
+	/** Origin of the plan: model-generated or deterministic structural heuristic. */
+	source?: "model" | "heuristic";
 }
 
 /** A knowledge card: the compact, uniform, queryable counterpart to a chapter. */

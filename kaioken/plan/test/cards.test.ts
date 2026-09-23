@@ -209,6 +209,31 @@ describe("cards: generation", () => {
 		await generateCard(module, index, client);
 		expect(client.requests[0]?.prompt).toContain("The core.");
 	});
+
+	it("triggers a correction pass when initial reply is malformed JSON", async () => {
+		const client = scriptedClient([
+			"this is not json at all {",
+			draft("Recovered from repair pass.", [{ name: "alpha", file: "src/a.ts" }]),
+		]);
+		const { card } = await generateCard(module, index, client);
+		expect(client.requests).toHaveLength(2);
+		expect(client.requests[1]?.purpose).toBe("card-repair-json");
+		expect(card.summary).toBe("Recovered from repair pass.");
+		expect(card.verification.grounded).toBe(1);
+	});
+
+	it("tolerates trailing commas in draft reply without failure", async () => {
+		const replyWithTrailingCommas = `{
+			"summary": "Trailing comma summary.",
+			"keyPoints": ["point 1",],
+			"entryPoints": [{"name": "alpha", "file": "src/a.ts", "note": "note",},],
+		}`;
+		const client = scriptedClient([replyWithTrailingCommas]);
+		const { card } = await generateCard(module, index, client);
+		expect(client.requests).toHaveLength(1);
+		expect(card.summary).toBe("Trailing comma summary.");
+		expect(card.verification.grounded).toBe(1);
+	});
 });
 
 describe("cards: batch generation", () => {
@@ -240,6 +265,54 @@ describe("cards: batch generation", () => {
 		const seen: string[] = [];
 		await generateCards(plan, index, client, { onProgress: (id) => seen.push(id) });
 		expect(seen).toEqual(["core"]);
+	});
+
+	it("reuses fresh existing card in incremental mode", async () => {
+		const client = scriptedClient([draft("new core summary", [])]);
+		const existingCard = {
+			moduleId: "core",
+			name: "Core",
+			generatedAt: "2026-01-01T00:00:00.000Z",
+			summary: "Cached existing summary",
+			keyPoints: ["kp1"],
+			entryPoints: [],
+			sources: [{ path: "src/a.ts", hash: "hash-src/a.ts" }],
+			verification: { grounded: 0, ungrounded: [], unknownFiles: [], uncovered: [] },
+		};
+
+		const results = await generateCards(plan, index, client, {
+			incremental: true,
+			existingCards: [existingCard],
+			knownFiles: new Map([["src/a.ts", "hash-src/a.ts"]]),
+		});
+
+		expect(results).toHaveLength(1);
+		expect(results[0]?.card.summary).toBe("Cached existing summary");
+		expect(client.requests).toHaveLength(0); // Model client was not invoked!
+	});
+
+	it("regenerates card in incremental mode when a source hash changes", async () => {
+		const client = scriptedClient([draft("Updated after change", [])]);
+		const existingCard = {
+			moduleId: "core",
+			name: "Core",
+			generatedAt: "2026-01-01T00:00:00.000Z",
+			summary: "Cached existing summary",
+			keyPoints: ["kp1"],
+			entryPoints: [],
+			sources: [{ path: "src/a.ts", hash: "old-hash" }],
+			verification: { grounded: 0, ungrounded: [], unknownFiles: [], uncovered: [] },
+		};
+
+		const results = await generateCards(plan, index, client, {
+			incremental: true,
+			existingCards: [existingCard],
+			knownFiles: new Map([["src/a.ts", "new-hash"]]),
+		});
+
+		expect(results).toHaveLength(1);
+		expect(results[0]?.card.summary).toBe("Updated after change");
+		expect(client.requests).toHaveLength(1); // Model client was invoked!
 	});
 });
 

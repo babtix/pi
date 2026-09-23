@@ -3,7 +3,7 @@ import type { IndexResult } from "@kaioken/index";
 import type { ScanResult } from "@kaioken/scan";
 import type { ModelClient, ModelRequest } from "@kaioken/modelport";
 import { gatherEvidence, gatherModuleEvidence } from "../src/evidence.ts";
-import { proposeModulePlan, buildPrompt } from "../src/propose.ts";
+import { buildPrompt, proposeHeuristicModules, proposeModulePlan } from "../src/propose.ts";
 import { expandDirectories, findModule, flatten, moduleScope, validatePlan } from "../src/validate.ts";
 import { normalisePlan, safeFileName } from "../src/artifact.ts";
 import type { ModulePlan } from "../src/types.ts";
@@ -362,6 +362,43 @@ describe("plan: proposal", () => {
 		const client = scriptedClient([JSON.stringify({ modules: [] })]);
 		await proposeModulePlan(scan, index, client);
 		expect(client.requests[0]?.prompt).toContain("Do not invent a path");
+	});
+
+	it("falls back to deterministic structural clustering when client is null", async () => {
+		const result = await proposeModulePlan(scan, index, null);
+		expect(result.source).toBe("heuristic");
+		expect(result.plan.source).toBe("heuristic");
+		expect(result.plan.modules.length).toBeGreaterThan(0);
+		expect(result.validation.ok).toBe(true);
+		expect(result.plan.modules[0]?.files).toEqual(["src/a.ts", "src/b.ts"]);
+	});
+
+	it("falls back to deterministic structural clustering when model completion throws", async () => {
+		const failingClient: ModelClient = {
+			async complete() {
+				throw new Error("503 Service Unavailable");
+			},
+		};
+		const result = await proposeModulePlan(scan, index, failingClient);
+		expect(result.source).toBe("heuristic");
+		expect(result.plan.source).toBe("heuristic");
+		expect(result.plan.modules.length).toBeGreaterThan(0);
+		expect(result.validation.ok).toBe(true);
+	});
+
+	it("clusters monorepo directory structures by package boundary", () => {
+		const monorepoScan = scanOf([
+			{ path: "packages/core/src/index.ts" },
+			{ path: "packages/ui/src/button.ts" },
+			{ path: "tools/build.ts" },
+			{ path: "README.md" },
+		]);
+		const modules = proposeHeuristicModules(monorepoScan);
+		const ids = modules.map((m) => m.id);
+		expect(ids).toContain("packages-core");
+		expect(ids).toContain("packages-ui");
+		expect(ids).toContain("tools");
+		expect(ids).toContain("root");
 	});
 });
 
