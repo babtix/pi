@@ -4,6 +4,14 @@ import { SymbolOracle, type IndexResult, readIndexArtifact } from "@kaioken/inde
 import { readCardsSafe, readProvenanceIndex } from "@kaioken/provenance";
 import { scan, type ScanResult } from "@kaioken/scan";
 import { loadSkills } from "@kaioken/skills";
+import {
+	buildDependencyGraph,
+	extractImportSpecifiers,
+	findTransitiveDependents,
+	resolveImportSpec,
+	type CycleEntry,
+} from "./cycle.ts";
+import { computeBlastRadius, type BlastRadiusScore } from "./score.ts";
 
 interface IndexReExport {
 	name: string;
@@ -36,6 +44,9 @@ export interface ImpactReport {
 	skills: Array<{ name: string; path: string }>;
 	unknown: string[];
 	partial: boolean;
+	transitive?: string[];
+	cycles?: CycleEntry[];
+	score?: BlastRadiusScore;
 }
 
 export interface PredictInput {
@@ -206,11 +217,28 @@ export async function predictImpact(input: PredictInput): Promise<ImpactReport> 
 		else unknown.push(path);
 	}
 
-	const { dependents, partial } = await sweep(input, names, seeds);
+	const { dependents, readouts, partial } = await sweep(input, names, seeds);
 	const limit = input.limit ?? 40;
 	const affected = new Set([...seeds, ...dependents.map((entry) => entry.path)]);
 
-	return {
+	const seedEntries: Array<{ path: string; content: string }> = [];
+	for (const seed of seeds) {
+		try {
+			const content = await readFile(join(input.root, seed), "utf8");
+			seedEntries.push({ path: seed, content });
+		} catch {
+			// Fail-soft: skip unreadable seed file
+		}
+	}
+
+	const allEntries = [
+		...seedEntries,
+		...readouts.map((r) => ({ path: r.path, content: r.content })),
+	];
+	const forwardGraph = buildDependencyGraph(allEntries, knownPaths);
+	const { transitiveDependents, cycles } = findTransitiveDependents(seeds, forwardGraph);
+
+	const report: ImpactReport = {
 		description: input.description,
 		symbols,
 		seeds: [...seeds].sort(),
@@ -220,7 +248,12 @@ export async function predictImpact(input: PredictInput): Promise<ImpactReport> 
 		skills: await affectedSkills(input.root, affected),
 		unknown: [...new Set(unknown)].sort(),
 		partial,
+		transitive: [...transitiveDependents].sort(),
+		cycles,
 	};
+	report.score = computeBlastRadius(report, cycles);
+
+	return report;
 }
 
 export async function predictImpactForSymbol(root: string, symbol: string): Promise<ImpactReport> {
@@ -306,8 +339,12 @@ async function sweep(
 	input: PredictInput,
 	names: ReadonlySet<string>,
 	seeds: ReadonlySet<string>,
-): Promise<{ dependents: Array<{ path: string; mentions: string[] }>; partial: boolean }> {
-	if (names.size === 0) return { dependents: [], partial: false };
+): Promise<{
+	dependents: Array<{ path: string; mentions: string[] }>;
+	readouts: Array<{ path: string; language: string; content: string }>;
+	partial: boolean;
+}> {
+	if (names.size === 0) return { dependents: [], readouts: [], partial: false };
 
 	const matchers: TextMatcher[] = [...names].map((name) => buildMatcher(name));
 
@@ -331,9 +368,10 @@ async function sweep(
 		}
 	});
 
+	const validReadouts = readouts.filter((r): r is { path: string; language: string; content: string } => r !== null);
+
 	const swept: SweptFile[] = [];
-	for (const readout of readouts) {
-		if (!readout) continue;
+	for (const readout of validReadouts) {
 		const graphLinked = isGraphLinked(readout.path, readout.content, byPath, knownPaths, seedList);
 		const code = codeOnly(readout.content);
 		const mentions: string[] = [];
@@ -365,6 +403,7 @@ async function sweep(
 	);
 	return {
 		dependents: swept.map((entry) => ({ path: entry.path, mentions: entry.mentions })),
+		readouts: validReadouts,
 		partial,
 	};
 }
@@ -487,121 +526,6 @@ function isGraphLinked(
 		}
 	}
 	return false;
-}
-
-function extractImportSpecifiers(content: string): string[] {
-	const specs: string[] = [];
-	const push = (spec: string): void => {
-		const trimmed = spec.trim();
-		if (trimmed) specs.push(trimmed);
-	};
-	let match: RegExpExecArray | null;
-	const fromRe = /(?:import|export)\s+(?:type\s+)?[^\n;]*?\sfrom\s*['"]([^'"]+)['"]/g;
-	while ((match = fromRe.exec(content)) !== null) push(match[1] as string);
-	const sideEffectRe = /import\s*['"]([^'"]+)['"]/g;
-	while ((match = sideEffectRe.exec(content)) !== null) push(match[1] as string);
-	const dynamicRe = /(?:import\s*\(\s*|require\s*\(\s*)['"]([^'"]+)['"]\s*\)/g;
-	while ((match = dynamicRe.exec(content)) !== null) push(match[1] as string);
-	const pyFromRe = /^\s*from\s+([.\w]+)\s+import\b/gm;
-	while ((match = pyFromRe.exec(content)) !== null) push(match[1] as string);
-	const pyImportRe = /^\s*import\s+([.\w]+(?:\s*,\s*[.\w]+)*)/gm;
-	while ((match = pyImportRe.exec(content)) !== null) {
-		const group = match[1] as string;
-		for (const part of group.split(",")) {
-			const head = part.split(/\s+as\s+/)[0]?.trim() ?? "";
-			if (/^[.\w]+$/.test(head)) push(head);
-		}
-	}
-	return specs;
-}
-
-function resolveImportSpec(
-	importer: string,
-	spec: string,
-	known: ReadonlySet<string>,
-): string | null {
-	const trimmed = spec.trim();
-	if (!trimmed || trimmed.startsWith("node:") || trimmed.startsWith("http:") || trimmed.startsWith("https:")) {
-		return null;
-	}
-	if (/^[\w.]+$/.test(trimmed) && trimmed.includes(".") && !trimmed.includes("/")) {
-		const pyResolved = resolvePythonModule(importer, trimmed, known);
-		if (pyResolved) return pyResolved;
-	}
-	if (trimmed.startsWith(".")) {
-		const dir = importer.includes("/") ? importer.slice(0, importer.lastIndexOf("/")) : "";
-		const raw = dir ? `${dir}/${trimmed}` : trimmed;
-		return tryResolveBase(normalizePosix(raw), known);
-	}
-	const stripped = trimmed.replace(/^@\//, "").replace(/^~\//, "").replace(/^\//, "");
-	const direct = tryResolveBase(normalizePosix(stripped), known);
-	if (direct) return direct;
-	if (/^[A-Za-z0-9_./-]+$/.test(stripped) && stripped.includes("/")) {
-		const suffix = `/${stripped}`;
-		for (const path of known) {
-			if (path === stripped || path.endsWith(suffix)) return path;
-			if (path.endsWith(`${suffix}.ts`) || path.endsWith(`${suffix}.tsx`)) return path;
-			if (path.endsWith(`${suffix}.js`) || path.endsWith(`${suffix}.py`)) return path;
-		}
-	}
-	return null;
-}
-
-function resolvePythonModule(importer: string, spec: string, known: ReadonlySet<string>): string | null {
-	const leadingMatch = /^\.+/.exec(spec);
-	const leading = leadingMatch ? (leadingMatch[0] as string).length : 0;
-	const rest = leading > 0 ? spec.slice(leading) : spec;
-	const dir = importer.includes("/") ? importer.slice(0, importer.lastIndexOf("/")) : "";
-	if (leading > 0) {
-		const parts = dir ? dir.split("/") : [];
-		const up = leading - 1;
-		const baseParts = parts.slice(0, Math.max(0, parts.length - up));
-		const restParts = rest ? rest.split(".").filter((part) => part.length > 0) : [];
-		const base = [...baseParts, ...restParts].join("/");
-		return tryResolveBase(base, known) ?? tryPythonCandidates(base, known);
-	}
-	const dotted = spec.split(".").join("/");
-	return tryResolveBase(dotted, known) ?? tryPythonCandidates(dotted, known);
-}
-
-function tryPythonCandidates(base: string, known: ReadonlySet<string>): string | null {
-	const candidates = [`${base}.py`, `${base}/__init__.py`];
-	for (const candidate of candidates) {
-		if (known.has(candidate)) return candidate;
-	}
-	return null;
-}
-
-function tryResolveBase(base: string, known: ReadonlySet<string>): string | null {
-	const candidates = [
-		base,
-		`${base}.ts`,
-		`${base}.tsx`,
-		`${base}.js`,
-		`${base}.jsx`,
-		`${base}.py`,
-		`${base}.go`,
-		`${base}.rs`,
-		`${base}/index.ts`,
-		`${base}/index.tsx`,
-		`${base}/index.js`,
-		`${base}/index.jsx`,
-		`${base}/__init__.py`,
-	];
-	for (const candidate of candidates) {
-		if (known.has(candidate)) return candidate;
-	}
-	return null;
-}
-
-function normalizePosix(raw: string): string {
-	const parts: string[] = [];
-	for (const seg of raw.split("/")) {
-		if (seg === "" || seg === ".") continue;
-		if (seg === "..") parts.pop();
-		else parts.push(seg);
-	}
-	return parts.join("/");
 }
 
 async function mapWithConcurrency<T, R>(

@@ -42,11 +42,11 @@
 ### Step 4: Category 10 — Impact Analysis & Blast Radius Prediction
 *Rank: #4 Cascading Breakage Prevention | Package: `kaioken/impact` | Features: `#UX-0901` – `#UX-1000`*  
 📄 **Plan Reference**: [`10-impact-analysis-blast-radius-prediction.md`](categories/10-impact-analysis-blast-radius-prediction.md)
-- [ ] **4.1** Implement transitive dependent tree calculator with circular dependency cycle guards (`UX-0901`–`UX-0910`)
-- [ ] **4.2** Build visual blast radius risk score gauge (0–100) assessing edits to shared symbols (`UX-0911`–`UX-0920`)
-- [ ] **4.3** Deploy pre-commit impact check gate blocking unannounced public API breaking changes (`UX-0921`–`UX-0930`)
-- [ ] **4.4** Implement safe-rename simulation report listing every file requiring callsite updates (`UX-0931`–`UX-0940`)
-- [ ] **4.5** Add Mermaid impact graph diagram exporter (`UX-0941`–`UX-0950`)
+- [x] **4.1** Implement transitive dependent tree calculator with circular dependency cycle guards (`UX-0901`–`UX-0910`)
+- [x] **4.2** Build visual blast radius risk score gauge (0–100) assessing edits to shared symbols (`UX-0911`–`UX-0920`)
+- [x] **4.3** Deploy pre-commit impact check gate blocking unannounced public API breaking changes (`UX-0921`–`UX-0930`)
+- [x] **4.4** Implement safe-rename simulation report listing every file requiring callsite updates (`UX-0931`–`UX-0940`)
+- [x] **4.5** Add Mermaid impact graph diagram exporter (`UX-0941`–`UX-0950`)
 
 ---
 

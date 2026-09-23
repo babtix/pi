@@ -4,7 +4,19 @@ import { dirname, join } from "node:path";
 import { buildIndex } from "@kaioken/index";
 import { scan } from "@kaioken/scan";
 import { afterEach, describe, expect, it } from "vitest";
-import { predictImpact, renderImpact } from "../src/index.ts";
+import {
+	predictImpact,
+	renderImpact,
+	buildDependencyGraph,
+	findTransitiveDependents,
+	computeBlastRadius,
+	renderBlastGauge,
+	runPreCommitGate,
+	renderGate,
+	simulateRename,
+	renderRenameSimulation,
+	exportMermaid,
+} from "../src/index.ts";
 
 /**
  * The claim this package makes is that nothing in its report is invented. Most
@@ -216,5 +228,232 @@ describe("impact prediction", () => {
 			limit: 100,
 		});
 		expect(report.dependents).toHaveLength(60);
+	});
+
+	it("populates score and cycles on predictImpact report", async () => {
+		const root = await repo(SAMPLE);
+		const { scan: scanResult, index } = await artifacts(root);
+
+		const report = await predictImpact({ root, description: "rename loadConfig", scan: scanResult, index });
+		expect(report.score).toBeDefined();
+		expect(report.score?.score).toBeGreaterThan(0);
+		expect(report.cycles).toBeDefined();
+		expect(Array.isArray(report.cycles)).toBe(true);
+
+		const rendered = renderImpact(report).join("\n");
+		expect(rendered).toContain("Risk Gauge:");
+	});
+});
+
+describe("transitive dependent tree & cycle guards (UX-0901–UX-0910)", () => {
+	it("detects circular dependency cycle (A → B → A) and breaks loop", () => {
+		const files = [
+			{ path: "src/a.ts", content: "import { b } from './b.ts';" },
+			{ path: "src/b.ts", content: "import { a } from './a.ts';" },
+		];
+		const knownPaths = new Set(["src/a.ts", "src/b.ts"]);
+		const graph = buildDependencyGraph(files, knownPaths);
+
+		const { transitiveDependents, cycles } = findTransitiveDependents(new Set(["src/a.ts"]), graph);
+		expect(transitiveDependents.has("src/b.ts")).toBe(true);
+		expect(cycles.length).toBeGreaterThan(0);
+		expect(cycles[0]?.cyclePath).toContain("src/b.ts");
+	});
+
+	it("detects multi-hop cycle (A → B → C → A) without infinite recursion", () => {
+		const files = [
+			{ path: "src/a.ts", content: "import { b } from './b.ts';" },
+			{ path: "src/b.ts", content: "import { c } from './c.ts';" },
+			{ path: "src/c.ts", content: "import { a } from './a.ts';" },
+		];
+		const known = new Set(["src/a.ts", "src/b.ts", "src/c.ts"]);
+		const graph = buildDependencyGraph(files, known);
+
+		const { transitiveDependents, cycles } = findTransitiveDependents(new Set(["src/a.ts"]), graph);
+		expect(transitiveDependents.has("src/b.ts")).toBe(true);
+		expect(transitiveDependents.has("src/c.ts")).toBe(true);
+		expect(cycles.length).toBeGreaterThan(0);
+	});
+
+	it("computes transitive dependents across multi-hop acyclic chain (A ← B ← C)", () => {
+		const files = [
+			{ path: "src/leaf.ts", content: "export const X = 1;" },
+			{ path: "src/mid.ts", content: "import { X } from './leaf.ts';" },
+			{ path: "src/top.ts", content: "import { mid } from './mid.ts';" },
+		];
+		const known = new Set(["src/leaf.ts", "src/mid.ts", "src/top.ts"]);
+		const graph = buildDependencyGraph(files, known);
+
+		const { transitiveDependents, cycles } = findTransitiveDependents(new Set(["src/leaf.ts"]), graph);
+		expect(transitiveDependents.has("src/mid.ts")).toBe(true);
+		expect(transitiveDependents.has("src/top.ts")).toBe(true);
+		expect(cycles).toHaveLength(0);
+	});
+});
+
+describe("blast radius risk score gauge (UX-0911–UX-0920)", () => {
+	it("computes low score for unexported symbol with zero dependents", () => {
+		const dummyReport = {
+			description: "internal helper",
+			symbols: [{ name: "_helper", path: "src/util.ts", kind: "function", exported: false }],
+			seeds: ["src/util.ts"],
+			dependents: [],
+			modules: [],
+			documents: [],
+			skills: [],
+			unknown: [],
+			partial: false,
+		};
+		const score = computeBlastRadius(dummyReport, []);
+		expect(score.score).toBe(0);
+		expect(score.label).toBe("low");
+		expect(renderBlastGauge(score)).toContain("0/100 low");
+	});
+
+	it("computes elevated score for exported symbol with many dependents and cycles", () => {
+		const dummyReport = {
+			description: "rename CoreModel",
+			symbols: [
+				{ name: "CoreModel", path: "src/model.ts", kind: "interface", exported: true },
+				{ name: "UserModel", path: "src/model.ts", kind: "interface", exported: true },
+			],
+			seeds: ["src/model.ts"],
+			dependents: Array.from({ length: 15 }, (_, i) => ({
+				path: `src/caller${i}.ts`,
+				mentions: ["CoreModel"],
+			})),
+			modules: [],
+			documents: [],
+			skills: [],
+			unknown: [],
+			partial: false,
+		};
+		const cycles = [{ path: "src/caller0.ts", cyclePath: ["src/model.ts", "src/caller0.ts"] }];
+		const score = computeBlastRadius(dummyReport, cycles);
+
+		expect(score.score).toBeGreaterThanOrEqual(40);
+		expect(score.breakdown.publicApi).toBe(20);
+		expect(score.breakdown.cycles).toBe(5);
+		expect(renderBlastGauge(score)).toMatch(/\[[█░]+\] \d+\/100 (medium|high|critical)/);
+	});
+});
+
+describe("pre-commit impact check gate (UX-0921–UX-0930)", () => {
+	it("passes gate when blast radius is safe", () => {
+		const report = {
+			description: "safe private tweak",
+			symbols: [{ name: "privateFn", path: "src/a.ts", kind: "function", exported: false }],
+			seeds: ["src/a.ts"],
+			dependents: [],
+			modules: [],
+			documents: [],
+			skills: [],
+			unknown: [],
+			partial: false,
+		};
+		const score = computeBlastRadius(report);
+		const gate = runPreCommitGate(report, score);
+
+		expect(gate.passed).toBe(true);
+		expect(gate.blockers).toHaveLength(0);
+		const rendered = renderGate(gate).join("\n");
+		expect(rendered).toContain("✓ Impact gate: PASSED");
+	});
+
+	it("blocks gate when public API change exceeds critical threshold", () => {
+		const report = {
+			description: "break AuthProvider",
+			symbols: [{ name: "AuthProvider", path: "src/auth.ts", kind: "class", exported: true }],
+			seeds: ["src/auth.ts"],
+			dependents: Array.from({ length: 30 }, (_, i) => ({
+				path: `src/dep${i}.ts`,
+				mentions: ["AuthProvider"],
+			})),
+			modules: [],
+			documents: [],
+			skills: [],
+			unknown: [],
+			partial: false,
+		};
+		const score = computeBlastRadius(report);
+		const gate = runPreCommitGate(report, score);
+
+		expect(gate.passed).toBe(false);
+		expect(gate.blockers.length).toBeGreaterThan(0);
+		expect(gate.blockers[0]?.symbol).toBe("AuthProvider");
+		const rendered = renderGate(gate).join("\n");
+		expect(rendered).toContain("✗ Impact gate: BLOCKED");
+	});
+});
+
+describe("safe-rename simulation (UX-0931–UX-0940)", () => {
+	it("finds all callsites with exact 1-based line numbers and snippets", async () => {
+		const root = await repo({
+			"src/util.ts": "export function calculateTotal(a: number, b: number) {\n\treturn a + b;\n}\n",
+			"src/order.ts": "import { calculateTotal } from './util.ts';\n\nconst total = calculateTotal(10, 20);\nconsole.log(calculateTotal(1, 2));\n",
+		});
+		const { scan: scanResult, index } = await artifacts(root);
+		const report = await predictImpact({ root, description: "calculateTotal", scan: scanResult, index });
+
+		const sim = await simulateRename(root, report, "calculateTotal", "computeTotal");
+		expect(sim.from).toBe("calculateTotal");
+		expect(sim.to).toBe("computeTotal");
+		expect(sim.totalFiles).toBe(2);
+		expect(sim.totalOccurrences).toBe(4);
+
+		const orderEntry = sim.callsites.find((c) => c.path === "src/order.ts");
+		expect(orderEntry).toBeDefined();
+		expect(orderEntry?.lines).toEqual([1, 3, 4]);
+
+		const rendered = renderRenameSimulation(sim).join("\n");
+		expect(rendered).toContain('Rename Simulation: "calculateTotal" → "computeTotal"');
+		expect(rendered).toContain("src/order.ts");
+		expect(rendered).toContain("L1:");
+	});
+});
+
+describe("mermaid impact graph diagram exporter (UX-0941–UX-0950)", () => {
+	it("exports valid flowchart syntax with stylized seeds and dependents", () => {
+		const report = {
+			description: "rename apiService",
+			symbols: [{ name: "apiService", path: "src/api.ts", kind: "const", exported: true }],
+			seeds: ["src/api.ts"],
+			dependents: [
+				{ path: "src/users.ts", mentions: ["apiService"] },
+				{ path: "src/billing.ts", mentions: ["apiService"] },
+			],
+			modules: [],
+			documents: [],
+			skills: [],
+			unknown: [],
+			partial: false,
+		};
+		const score = computeBlastRadius(report);
+		const mermaid = exportMermaid(report, score, { direction: "LR" });
+
+		expect(mermaid).toContain("flowchart LR");
+		expect(mermaid).toContain('subgraph Seeds["🌱 Change Seeds"]');
+		expect(mermaid).toContain('subgraph Dependents["💥 Blast Radius Dependents"]');
+		expect(mermaid).toContain("classDef seed");
+		expect(mermaid).toContain("-->");
+	});
+
+	it("caps diagram nodes at maxNodes limit and notes truncation", () => {
+		const report = {
+			description: "massive impact",
+			symbols: [{ name: "Core", path: "src/core.ts", kind: "const", exported: true }],
+			seeds: ["src/core.ts"],
+			dependents: Array.from({ length: 20 }, (_, i) => ({
+				path: `src/mod${i}.ts`,
+				mentions: ["Core"],
+			})),
+			modules: [],
+			documents: [],
+			skills: [],
+			unknown: [],
+			partial: false,
+		};
+		const mermaid = exportMermaid(report, undefined, { maxNodes: 5 });
+		expect(mermaid).toContain("+15 additional dependent files omitted for brevity");
 	});
 });

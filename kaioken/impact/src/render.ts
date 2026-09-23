@@ -1,4 +1,5 @@
 import type { ImpactReport } from "./predict.ts";
+import { renderBlastGauge } from "./score.ts";
 
 /**
  * The report as something to read.
@@ -19,6 +20,9 @@ export function renderImpact(report: ImpactReport): string[] {
 	}
 
 	out.push(`${report.symbols.length} declaration(s) match:`);
+	if (report.score) {
+		out.push(`  Risk Gauge: ${renderBlastGauge(report.score)}`);
+	}
 	for (const symbol of report.symbols.slice(0, 20)) {
 		out.push(`  ${symbol.exported ? "+" : "-"} ${symbol.name} (${symbol.kind}) — ${symbol.path}`);
 	}
@@ -31,6 +35,13 @@ export function renderImpact(report: ImpactReport): string[] {
 	}
 	for (const dependent of report.dependents.slice(0, 25)) {
 		out.push(`  ${dependent.path} (${dependent.mentions.join(", ")})`);
+	}
+
+	if (report.cycles && report.cycles.length > 0) {
+		out.push("", `⚠ ${report.cycles.length} circular dependency cycle(s) detected:`);
+		for (const cycle of report.cycles.slice(0, 5)) {
+			out.push(`  🔁 ${cycle.cyclePath.join(" → ")}`);
+		}
 	}
 
 	if (report.modules.length > 0) {
