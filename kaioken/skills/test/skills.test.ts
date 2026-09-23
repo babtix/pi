@@ -83,6 +83,55 @@ describe("loadSkills", () => {
 		expect(loaded.problems.map((problem) => problem.reason)).toEqual([
 			'duplicate skill name "release"',
 		]);
+		expect(loaded.skills).toHaveLength(1);
+	});
+
+	it("discovers skills across standard agent directories (.agents, .pi, .github)", async () => {
+		const root = await repo({
+			".agents/skills/agent-skill.md": [
+				"---",
+				"name: agent-skill",
+				"description: Agent skill.",
+				"---",
+				"",
+				"Body 1",
+			].join("\n"),
+			".pi/skills/pi-skill.md": [
+				"---",
+				"name: pi-skill",
+				"description: Pi skill.",
+				"---",
+				"",
+				"Body 2",
+			].join("\n"),
+			".github/skills/gh-skill.md": [
+				"---",
+				"name: gh-skill",
+				"description: GitHub skill.",
+				"---",
+				"",
+				"Body 3",
+			].join("\n"),
+		});
+
+		const loaded = await loadSkills(root);
+		expect(loaded.skills.map((s) => s.name).sort()).toEqual(["agent-skill", "gh-skill", "pi-skill"]);
+	});
+
+	it("supports custom search directories and extraDirs", async () => {
+		const root = await repo({
+			"custom/skills/custom.md": [
+				"---",
+				"name: custom-skill",
+				"description: Custom skill.",
+				"---",
+				"",
+				"Body",
+			].join("\n"),
+		});
+
+		const loaded = await loadSkills(root, { extraDirs: ["custom/skills"] });
+		expect(loaded.skills.map((s) => s.name)).toEqual(["custom-skill"]);
 	});
 });
 
@@ -107,6 +156,16 @@ describe("loadSkill", () => {
 		expect(content).toContain('Skill "deploy" not found');
 		expect(content).toContain("release");
 	});
+
+	it("returns error on duplicate skill collision", async () => {
+		const root = await repo({
+			".kaioken/skills/a.md": RELEASE,
+			".kaioken/skills/b.md": RELEASE,
+		});
+
+		const content = await loadSkill(root, "release");
+		expect(content).toContain('Error: duplicate skill name "release" detected');
+	});
 });
 
 describe("parseSkill", () => {
@@ -127,5 +186,54 @@ describe("parseSkill", () => {
 	it("survives CRLF line endings", () => {
 		const parsed = parseSkill(RELEASE.replace(/\n/g, "\r\n"), "fallback");
 		expect(parsed).toMatchObject({ name: "release" });
+	});
+
+	it("validates parameters and triggers schema", () => {
+		const valid = [
+			"---",
+			"name: valid",
+			"description: Valid skill",
+			"parameters:",
+			"  timeout: 30",
+			"triggers:",
+			"  - commit",
+			"  - push",
+			"---",
+			"",
+			"Do the thing.",
+		].join("\n");
+		const parsed = parseSkill(valid, "valid");
+		expect(parsed).toMatchObject({
+			name: "valid",
+			description: "Valid skill",
+			parameters: { timeout: 30 },
+			triggers: ["commit", "push"],
+		});
+
+		const badParams = [
+			"---",
+			"name: bad",
+			"description: Bad params",
+			"parameters: not-a-map",
+			"---",
+			"",
+			"Body",
+		].join("\n");
+		expect(parseSkill(badParams, "bad")).toEqual({
+			reason: "frontmatter field 'parameters' must be a mapping",
+		});
+
+		const badTriggers = [
+			"---",
+			"name: bad",
+			"description: Bad triggers",
+			"triggers: not-a-list",
+			"---",
+			"",
+			"Body",
+		].join("\n");
+		expect(parseSkill(badTriggers, "bad")).toEqual({
+			reason: "frontmatter field 'triggers' must be a list of strings",
+		});
 	});
 });
