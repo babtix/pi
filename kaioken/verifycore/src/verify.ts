@@ -16,9 +16,10 @@ export async function verifyDocument(input: VerifyInput): Promise<VerificationRe
 	let grounded = 0;
 
 	const scopeText = await readScope(input);
+	const basenameIndex = buildBasenameIndex(input.knownFiles);
 
 	for (const claim of claims) {
-		const defect = await checkClaim(claim, input, scopeText);
+		const defect = await checkClaim(claim, input, scopeText, basenameIndex);
 		if (defect) defects.push(defect);
 		else grounded++;
 	}
@@ -44,19 +45,74 @@ export async function verifyDocument(input: VerifyInput): Promise<VerificationRe
 	return { grounded, defects, uncovered, coverage };
 }
 
+const GENERIC_FILENAMES = new Set([
+	"index.ts",
+	"index.js",
+	"index.mjs",
+	"index.cjs",
+	"index.tsx",
+	"index.jsx",
+	"types.ts",
+	"types.js",
+	"types.d.ts",
+	"mod.rs",
+	"main.go",
+	"main.rs",
+	"main.py",
+	"main.ts",
+	"main.js",
+	"utils.ts",
+	"utils.js",
+	"util.ts",
+	"util.js",
+]);
+
+function buildBasenameIndex(knownFiles: ReadonlySet<string>): Map<string, string[]> {
+	const map = new Map<string, string[]>();
+	for (const file of knownFiles) {
+		const slash = file.lastIndexOf("/");
+		const base = slash === -1 ? file : file.slice(slash + 1);
+		let list = map.get(base);
+		if (!list) {
+			list = [];
+			map.set(base, list);
+		}
+		list.push(file);
+	}
+	return map;
+}
+
 async function checkClaim(
 	claim: Claim,
 	input: VerifyInput,
 	scopeText: string,
+	basenameIndex: Map<string, string[]>,
 ): Promise<Defect | null> {
 	switch (claim.kind) {
 		case "file": {
 			if (input.knownFiles.has(claim.text)) return null;
-			const base = claim.text.slice(claim.text.lastIndexOf("/") + 1);
-			for (const known of input.knownFiles) {
-				if (known.endsWith(`/${base}`) || known === base) return null;
+
+			const slash = claim.text.lastIndexOf("/");
+			const hasSlash = slash !== -1;
+			const base = hasSlash ? claim.text.slice(slash + 1) : claim.text;
+			const isGeneric = GENERIC_FILENAMES.has(base.toLowerCase());
+
+			if (hasSlash) {
+				const candidates = basenameIndex.get(base);
+				if (candidates) {
+					for (const known of candidates) {
+						if (known.endsWith(`/${claim.text}`)) return null;
+					}
+				}
+			} else {
+				if (basenameIndex.has(base)) return null;
 			}
-			if (scopeText.includes(base)) return null;
+
+			if (!isGeneric) {
+				if (hasSlash && scopeText.includes(claim.text)) return null;
+				if (!hasSlash && scopeText.includes(base)) return null;
+			}
+
 			return {
 				kind: "unknown_file",
 				claim: claim.text,
@@ -66,7 +122,7 @@ async function checkClaim(
 		}
 
 		case "symbol": {
-			if (namesAKnownFile(claim.text, input.knownFiles)) return null;
+			if (namesAKnownFile(claim.text, input.knownFiles, basenameIndex)) return null;
 
 			for (const candidate of nameCandidates(claim.text)) {
 				if (input.oracle.has(candidate)) return null;
@@ -180,13 +236,14 @@ async function readScope(input: VerifyInput): Promise<string> {
 	return parts.join("\n");
 }
 
-function namesAKnownFile(text: string, knownFiles: ReadonlySet<string>): boolean {
+function namesAKnownFile(
+	text: string,
+	knownFiles: ReadonlySet<string>,
+	basenameIndex: Map<string, string[]>,
+): boolean {
 	if (knownFiles.has(text)) return true;
 	if (text.includes("/")) return false;
-	for (const known of knownFiles) {
-		if (known === text || known.endsWith(`/${text}`)) return true;
-	}
-	return false;
+	return basenameIndex.has(text);
 }
 
 function containsExcerpt(source: string, excerpt: string): boolean {

@@ -130,4 +130,58 @@ describe("verifyDocument", () => {
 		expect(unknown.length).toBeGreaterThan(0);
 		expect(unknown[0]?.claim).toBe("nonExistentFunction");
 	});
+
+	it("does not falsely ground fabricated paths with generic filenames", async () => {
+		const { root, scan: scanned, oracle } = await repo({
+			"src/walk.ts": 'const helper = "index.ts"; export function walkTree() { return helper; }',
+			"README.md": "# Demo\n",
+		});
+		const body = "See `src/controllers/index.ts` and `lib/utils.ts` for details.";
+
+		const report = await verifyDocument({
+			body,
+			oracle,
+			scope: ["src/walk.ts"],
+			knownFiles: new Set(scanned.files.map((f) => f.path)),
+			readSource: async (p) => {
+				try {
+					const { readFile } = await import("node:fs/promises");
+					return await readFile(join(root, p), "utf8");
+				} catch {
+					return null;
+				}
+			},
+		});
+
+		const unknownFiles = report.defects.filter((d) => d.kind === "unknown_file");
+		expect(unknownFiles.map((d) => d.claim)).toContain("src/controllers/index.ts");
+		expect(unknownFiles.map((d) => d.claim)).toContain("lib/utils.ts");
+	});
+
+	it("does not ground generic filenames solely from scopeText", async () => {
+		const { root, scan: scanned, oracle } = await repo({
+			"src/walk.ts": '// Mentions types.ts and mod.rs in comments\nexport function walkTree() { return []; }',
+			"README.md": "# Demo\n",
+		});
+		const body = "Refer to `foo/types.ts` for types.";
+
+		const report = await verifyDocument({
+			body,
+			oracle,
+			scope: ["src/walk.ts"],
+			knownFiles: new Set(scanned.files.map((f) => f.path)),
+			readSource: async (p) => {
+				try {
+					const { readFile } = await import("node:fs/promises");
+					return await readFile(join(root, p), "utf8");
+				} catch {
+					return null;
+				}
+			},
+		});
+
+		const unknownFiles = report.defects.filter((d) => d.kind === "unknown_file");
+		expect(unknownFiles.map((d) => d.claim)).toContain("foo/types.ts");
+	});
 });
+

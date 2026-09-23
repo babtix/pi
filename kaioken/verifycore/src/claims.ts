@@ -129,7 +129,7 @@ function dedupe(claims: Claim[]): Claim[] {
 	const seen = new Set<string>();
 	const out: Claim[] = [];
 	for (const claim of claims) {
-		const key = `${claim.kind}\0${claim.file ?? ""}\0${claim.text}`;
+		const key = `${claim.kind}:${claim.file ?? ""}:${claim.text}:${claim.line}`;
 		if (seen.has(key)) continue;
 		seen.add(key);
 		out.push(claim);
@@ -138,34 +138,68 @@ function dedupe(claims: Claim[]): Claim[] {
 }
 
 const PADDING_PHRASES = [
+	"it is important to note",
+	"it is worth noting",
+	"it should be noted",
+	"in conclusion",
+	"in summary",
+	"as we can see",
+	"as mentioned above",
+	"as mentioned earlier",
+	"this module provides",
+	"this function is responsible for",
+	"this class is responsible for",
+	"this file contains",
 	"provides functionality for",
-	"is responsible for handling",
+	"a wide range of",
+	"various features",
+	"and much more",
+	"etc.",
+	"robust and scalable",
+	"best practices",
 	"plays a crucial role",
-	"plays a key role",
+	"plays a vital role",
+	"it is essential to",
+	"one of the most important",
+	"the heart of the",
+	"at its core",
+	"simply put",
+	"needless to say",
+	"when it comes to",
+	"a variety of",
+	"the following features",
+	"is responsible for handling",
 	"it is important to note that",
 	"in today's fast-paced",
-	"robust and scalable",
 	"seamlessly integrates",
 	"powerful and flexible",
-	"a wide range of",
 	"various different",
 	"leverages the power of",
 	"under the hood, this",
 	"at its core, this module is",
 	"this section will discuss",
 	"as mentioned previously",
-	"in conclusion",
 ];
 
-export function findPadding(body: string): { phrase: string; line: number }[] {
-	const out: { phrase: string; line: number }[] = [];
+export function findPadding(body: string): Array<{ phrase: string; line: number }> {
+	const out: Array<{ phrase: string; line: number }> = [];
 	const lines = body.split(/\r?\n/);
+	let inFence = false;
 
 	for (let i = 0; i < lines.length; i++) {
-		const lowered = (lines[i] as string).toLowerCase();
+		const line = lines[i] as string;
+
+		if (/^\s*(?:```|~~~)/.test(line)) {
+			inFence = !inFence;
+			continue;
+		}
+		if (inFence) continue;
+
+		const lowered = line.toLowerCase();
 		for (const phrase of PADDING_PHRASES) {
 			if (lowered.includes(phrase)) out.push({ phrase, line: i + 1 });
 		}
 	}
+
 	return out;
 }
