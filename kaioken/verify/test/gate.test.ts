@@ -5,9 +5,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
 	type CommandRunner,
 	detectCommands,
+	detectPackageManager,
+	extractFailures,
+	formatFailureSummary,
 	type RunOutcome,
 	runGate,
 	runVerify,
+	stripAnsi,
 	tail,
 } from "../src/index.ts";
 
@@ -179,12 +183,262 @@ describe("runGate", () => {
 	});
 });
 
+describe("detectPackageManager", () => {
+	it("detects pnpm from lockfile or workspace file", async () => {
+		const lock = await repo({ "pnpm-lock.yaml": "" });
+		const ws = await repo({ "pnpm-workspace.yaml": "packages:\n  - 'packages/*'\n" });
+		expect(await detectPackageManager(lock)).toBe("pnpm");
+		expect(await detectPackageManager(ws)).toBe("pnpm");
+	});
+
+	it("detects yarn from yarn.lock", async () => {
+		const root = await repo({ "yarn.lock": "" });
+		expect(await detectPackageManager(root)).toBe("yarn");
+	});
+
+	it("detects bun from both bun.lockb and bun.lock", async () => {
+		const bin = await repo({ "bun.lockb": "" });
+		const txt = await repo({ "bun.lock": "" });
+		expect(await detectPackageManager(bin)).toBe("bun");
+		expect(await detectPackageManager(txt)).toBe("bun");
+	});
+
+	it("detects deno from deno.json or deno.lock", async () => {
+		const json = await repo({ "deno.json": "{}" });
+		const lock = await repo({ "deno.lock": "{}" });
+		expect(await detectPackageManager(json)).toBe("deno");
+		expect(await detectPackageManager(lock)).toBe("deno");
+	});
+
+	it("defaults to npm when no special lockfile exists", async () => {
+		const root = await repo({ "package.json": "{}" });
+		expect(await detectPackageManager(root)).toBe("npm");
+	});
+});
+
+describe("detectCommands modern runtimes & monorepo handling", () => {
+	it("detects Deno when deno.json is present", async () => {
+		const root = await repo({ "deno.json": '{\n  "tasks": { "test": "deno test" }\n}' });
+		const { commands } = await detectCommands(root);
+		expect(commands.map((c) => c.command)).toEqual(["deno test"]);
+		expect(commands[0]?.id).toBe("deno:test");
+	});
+
+	it("falls back to workspace test command when root package.json has workspaces without test script", async () => {
+		const root = await repo({
+			"package.json": JSON.stringify({
+				name: "root-mono",
+				workspaces: ["packages/*"],
+				scripts: { build: "tsc" },
+			}),
+		});
+		const { commands } = await detectCommands(root);
+		expect(commands.map((c) => c.command)).toEqual([
+			"npm run build",
+			"npm test --workspaces --if-present",
+		]);
+	});
+
+	it("falls back to pnpm recursive test when pnpm-workspace.yaml exists without root test script", async () => {
+		const root = await repo({
+			"pnpm-workspace.yaml": "packages:\n  - 'packages/*'\n",
+			"package.json": JSON.stringify({ name: "pnpm-mono" }),
+		});
+		const { commands } = await detectCommands(root);
+		expect(commands.map((c) => c.command)).toEqual(["pnpm -r --if-present test"]);
+	});
+
+	it("honors root test script over workspace fallback when declared", async () => {
+		const root = await repo({
+			"package.json": JSON.stringify({
+				workspaces: ["packages/*"],
+				scripts: { test: "custom-test-runner" },
+			}),
+		});
+		const { commands } = await detectCommands(root);
+		expect(commands.map((c) => c.command)).toEqual(["npm run test"]);
+	});
+
+	it("uses pnpm test when pnpm-lock.yaml is present", async () => {
+		const root = await repo({
+			"package.json": JSON.stringify({ scripts: { test: "vitest run" } }),
+			"pnpm-lock.yaml": "",
+		});
+		const { commands } = await detectCommands(root);
+		expect(commands.map((c) => c.command)).toEqual(["pnpm test"]);
+	});
+});
+
 describe("runVerify", () => {
 	it("returns unverifiable when no test suite is detected", async () => {
 		const emptyDir = await repo({ "README.md": "hello" });
 		const result = await runVerify(emptyDir);
 		expect(result.pass).toBe(false);
 		expect(result.summary).toContain("unverifiable");
+	});
+
+	it("runs pnpm test when pnpm-lock.yaml is present", async () => {
+		const root = await repo({
+			"package.json": JSON.stringify({ scripts: { test: "vitest run" } }),
+			"pnpm-lock.yaml": "",
+		});
+		const runner = new ScriptedRunner({
+			"pnpm test": { exitCode: 0, stdout: "10 tests passed" },
+		});
+		const result = await runVerify(root, 10_000, runner);
+		expect(runner.ran).toEqual(["pnpm test"]);
+		expect(result.pass).toBe(true);
+		expect(result.summary).toContain("10 tests passed");
+	});
+
+	it("runs commands declared in .kaioken/verify.json", async () => {
+		const root = await repo({
+			".kaioken/verify.json": JSON.stringify({
+				commands: [
+					{ label: "lint", command: "pnpm lint" },
+					{ label: "test", command: "pnpm test:ci" },
+				],
+			}),
+		});
+		const runner = new ScriptedRunner({
+			"pnpm lint": { exitCode: 0, stdout: "lint ok" },
+			"pnpm test:ci": { exitCode: 0, stdout: "all tests green" },
+		});
+		const result = await runVerify(root, 10_000, runner);
+		expect(runner.ran).toEqual(["pnpm lint", "pnpm test:ci"]);
+		expect(result.pass).toBe(true);
+		expect(result.summary).toContain("all tests green");
+	});
+
+	it("runs pytest when pyproject.toml is present", async () => {
+		const root = await repo({
+			"pyproject.toml": "[tool.pytest]\n",
+		});
+		const runner = new ScriptedRunner({
+			pytest: { exitCode: 0, stdout: "3 passed in 0.12s" },
+		});
+		const result = await runVerify(root, 10_000, runner);
+		expect(runner.ran).toEqual(["pytest"]);
+		expect(result.pass).toBe(true);
+	});
+
+	it("reports structured failure when tests fail", async () => {
+		const root = await repo({
+			"package.json": JSON.stringify({ scripts: { test: "vitest" } }),
+		});
+		const runner = new ScriptedRunner({
+			"npm run test": {
+				exitCode: 1,
+				stdout: "FAIL test/login.test.ts\n ❯ test/login.test.ts:10:5 > auth > rejects bad pass\n",
+			},
+		});
+		const result = await runVerify(root, 10_000, runner);
+		expect(result.pass).toBe(false);
+		expect(result.summary).toContain("Failed tests (1):");
+		expect(result.summary).toContain("test/login.test.ts: auth > rejects bad pass");
+	});
+});
+
+describe("extractFailures & structured reporting", () => {
+	it("extracts Vitest failures with arrow notation and FAIL file header", () => {
+		const output = `
+ FAIL  test/auth.test.ts
+   ❯ test/auth.test.ts:25:7 > auth service > fails invalid token
+   ✕ sends correct error code (12ms)
+`;
+		const failures = extractFailures(output);
+		expect(failures.length).toBeGreaterThanOrEqual(1);
+		expect(failures.some((f) => f.testName?.includes("fails invalid token"))).toBe(true);
+	});
+
+	it("extracts Jest bullet style failures", () => {
+		const output = `
+FAIL src/user.test.ts
+  ● User module › creates new user successfully
+    AssertionError: expected null to be defined
+`;
+		const failures = extractFailures(output);
+		expect(failures).toEqual([
+			{ file: "src/user.test.ts", testName: "User module › creates new user successfully" },
+		]);
+	});
+
+	it("extracts Go test failures with location", () => {
+		const output = `
+=== RUN   TestLogin
+--- FAIL: TestLogin (0.02s)
+    login_test.go:45: user credentials mismatch
+FAIL
+`;
+		const failures = extractFailures(output);
+		expect(failures).toEqual([
+			{
+				file: "login_test.go:45",
+				testName: "TestLogin",
+				message: "user credentials mismatch",
+			},
+		]);
+	});
+
+	it("extracts Pytest failures", () => {
+		const output = `
+FAILED tests/test_db.py::test_connection - ConnectionRefusedError
+FAILED tests/test_db.py::test_query - TimeoutError: 5s
+`;
+		const failures = extractFailures(output);
+		expect(failures).toEqual([
+			{
+				file: "tests/test_db.py",
+				testName: "test_connection",
+				message: "ConnectionRefusedError",
+			},
+			{
+				file: "tests/test_db.py",
+				testName: "test_query",
+				message: "TimeoutError: 5s",
+			},
+		]);
+	});
+
+	it("extracts Cargo test failures", () => {
+		const output = `
+running 2 tests
+test parser::test_parse ... ok
+test parser::test_invalid_token ... FAILED
+
+failures:
+    parser::test_invalid_token
+`;
+		const failures = extractFailures(output);
+		expect(failures).toEqual([{ testName: "parser::test_invalid_token" }]);
+	});
+
+	it("strips ANSI escape codes before extracting failures", () => {
+		const output = `\x1b[31mFAILED\x1b[39m tests/test_ui.py::\x1b[1mtest_render\x1b[22m - AssertionError`;
+		expect(stripAnsi(output)).toBe("FAILED tests/test_ui.py::test_render - AssertionError");
+		const failures = extractFailures(output);
+		expect(failures).toEqual([
+			{
+				file: "tests/test_ui.py",
+				testName: "test_render",
+				message: "AssertionError",
+			},
+		]);
+	});
+
+	it("formatFailureSummary formats header and includes raw tail", () => {
+		const output = "FAILED tests/test_app.py::test_boot - RuntimeError: failed to boot\nLine 2\nLine 3";
+		const formatted = formatFailureSummary(output);
+		expect(formatted).toContain("Failed tests (1):");
+		expect(formatted).toContain("- tests/test_app.py: test_boot");
+		expect(formatted).toContain("--- Output tail ---");
+	});
+
+	it("formatFailureSummary falls back to tail when no structured test patterns match", () => {
+		const output = "error: could not compile `demo` (bin 'demo') due to 1 previous error";
+		const formatted = formatFailureSummary(output);
+		expect(formatted).toBe(output);
+		expect(formatted).not.toContain("Failed tests");
 	});
 });
 
