@@ -30,12 +30,12 @@
 ### Step 3: Category 11 — Verification Gates, Native Test Runners & Diagnostics
 *Rank: #3 Developer Quality Enforcer | Package: `kaioken/verify` | Features: `#UX-1001` – `#UX-1100`*  
 📄 **Plan Reference**: [`11-verification-gates-native-test-runners-diagnostics.md`](categories/11-verification-gates-native-test-runners-diagnostics.md)
-- [ ] **3.1** Build multi-runtime auto-detection engine for test commands (Vitest, Pytest, Go, Cargo) (`UX-1001`–`UX-1010`)
-- [ ] **3.2** Implement streaming test execution console displaying live stdout/stderr chunks (`UX-1011`–`UX-1020`)
-- [ ] **3.3** Deploy structured failure extractor parsing test file, line number, and assertion diffs (`UX-1021`–`UX-1030`)
-- [ ] **3.4** Build flaky test detector with non-deterministic rerun analysis and quarantine hints (`UX-1031`–`UX-1040`)
-- [ ] **3.5** Implement automated repair protocol feeding test failures back to model for fixes (`UX-1041`–`UX-1050`)
-- [ ] **3.6** Add custom verification configuration loader reading `.kaioken/verify.json` (`UX-1051`–`UX-1060`)
+- [x] **3.1** Build multi-runtime auto-detection engine for test commands (Vitest, Pytest, Go, Cargo) (`UX-1001`–`UX-1010`)
+- [x] **3.2** Implement streaming test execution console displaying live stdout/stderr chunks (`UX-1011`–`UX-1020`)
+- [x] **3.3** Deploy structured failure extractor parsing test file, line number, and assertion diffs (`UX-1021`–`UX-1030`)
+- [x] **3.4** Build flaky test detector with non-deterministic rerun analysis and quarantine hints (`UX-1031`–`UX-1040`)
+- [x] **3.5** Implement automated repair protocol feeding test failures back to model for fixes (`UX-1041`–`UX-1050`)
+- [x] **3.6** Add custom verification configuration loader reading `.kaioken/verify.json` (`UX-1051`–`UX-1060`)
 
 ---
 
