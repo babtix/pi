@@ -125,9 +125,29 @@ let activeServer: RunningServer | null = null;
 export function clientFor(ctx: ExtensionContext): ModelClient | null {
 	const model = ctx.model;
 	if (!model) return null;
-	// The bridge owns the transport; the core only ever sees the port.
-	const models = (ctx as unknown as { models?: Models }).models;
+
+	const reg = (ctx as any).modelRegistry;
+	const runtime = reg?.runtime;
+	const rawModels = (ctx as any).models;
+
+	let models: Models | null = null;
+	if (rawModels) {
+		models = rawModels;
+	} else if (reg || runtime) {
+		models = {
+			getModel: (p: string, m: string) => reg?.find?.(p, m) ?? runtime?.getModel?.(p, m),
+			getModels: (p?: string) => {
+				if (runtime?.getModels) return runtime.getModels(p);
+				const all = reg?.getAll?.() ?? [];
+				return p ? all.filter((m: any) => m.provider === p) : all;
+			},
+			complete: (m: any, c: any, o: any) => reg?.complete?.(m, c, o) ?? runtime?.complete?.(m, c, o),
+			stream: (m: any, c: any, o: any) => reg?.stream?.(m, c, o) ?? runtime?.stream?.(m, c, o),
+		} as unknown as Models;
+	}
+
 	if (!models) return null;
+
 	// `ctx.thinkingLevel` is typed by the agent package, which spells the level
 	// union slightly differently from pi-ai ("off" is a model-level concept).
 	// They are the same values at runtime, so this narrows rather than casts.

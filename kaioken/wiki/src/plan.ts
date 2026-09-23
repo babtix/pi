@@ -25,8 +25,27 @@ Rules:
   cannot be written.
 - Do not create a chapter per directory. Group by subject.
 
-Reply with JSON only:
+IMPORTANT: Reply with raw JSON only. No prose, no markdown fences, no explanation.
+The ENTIRE response must be valid JSON matching this exact schema:
 {"chapters":[{"id":"kebab-id","title":"Title","goal":"...","files":["path"]}]}`;
+
+const JSON_ENFORCE_SYSTEM = `You are a JSON formatter. You must output ONLY valid JSON, nothing else.
+No markdown, no prose, no code fences. Raw JSON only.`;
+
+/** Builds a retry prompt that shows the model its previous reply and demands JSON. */
+function buildJsonEnforcePrompt(schema: string, prevReply: string): string {
+	return `Your previous response was not valid JSON. Here it is:
+
+<previous_response>
+${prevReply.slice(0, 4000)}
+</previous_response>
+
+Extract the information from your previous response and reformat it as the following JSON schema.
+Output ONLY the JSON object. No explanation, no markdown, no prose.
+
+Required schema:
+${schema}`;
+}
 
 const SECTION_SYSTEM = `You plan the subsections of one wiki chapter.
 
@@ -58,7 +77,21 @@ export async function planWiki(input: GlobalPlanInput): Promise<{ plan: WikiPlan
 		maxOutputTokens: depth.maxOutputTokens,
 	});
 
-	const parsed = extractJson<{ chapters?: unknown }>(reply);
+	let parsed: { chapters?: unknown };
+	try {
+		parsed = extractJson<{ chapters?: unknown }>(reply);
+	} catch {
+		// Model replied in prose; ask it to reformat its own output as JSON.
+		const schema = '{"chapters":[{"id":"kebab-id","title":"Title","goal":"...","files":["path"]}]}';
+		const enforced = await input.client.complete({
+			purpose: "wiki-plan-json-enforce",
+			system: JSON_ENFORCE_SYSTEM,
+			prompt: buildJsonEnforcePrompt(schema, reply),
+			maxOutputTokens: depth.maxOutputTokens,
+		});
+		parsed = extractJson<{ chapters?: unknown }>(enforced);
+	}
+
 	const chapters = Array.isArray(parsed.chapters)
 		? parsed.chapters.map(coerceChapter).filter((c): c is Chapter => c !== null)
 		: [];
@@ -99,11 +132,24 @@ export async function planSections(input: SectionPlanInput): Promise<Section[]> 
 		maxOutputTokens: depth.maxOutputTokens,
 	});
 
-	const parsed = extractJson<{ sections?: unknown }>(reply);
+	let rawParsed: { sections?: unknown };
+	try {
+		rawParsed = extractJson<{ sections?: unknown }>(reply);
+	} catch {
+		const schema = '{"sections":[{"id":"kebab-id","title":"Title","summary":"...","files":["path"]}]}';
+		const enforced = await input.client.complete({
+			purpose: "wiki-sections-json-enforce",
+			system: JSON_ENFORCE_SYSTEM,
+			prompt: buildJsonEnforcePrompt(schema, reply),
+			maxOutputTokens: depth.maxOutputTokens,
+		});
+		rawParsed = extractJson<{ sections?: unknown }>(enforced);
+	}
+
 	const allowed = new Set(input.chapter.files);
 
-	return Array.isArray(parsed.sections)
-		? parsed.sections.map((raw) => coerceSection(raw, allowed)).filter((s): s is Section => s !== null)
+	return Array.isArray(rawParsed.sections)
+		? rawParsed.sections.map((raw) => coerceSection(raw, allowed)).filter((s): s is Section => s !== null)
 		: [];
 }
 
