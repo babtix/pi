@@ -820,7 +820,7 @@ pi.on("provider_stream_event", (event) => {
 });
 ```
 
-Handlers are awaited in stream order, so slow handlers delay stream consumption. Handler errors are reported as extension errors without changing the provider response. Support is adapter-specific. Currently `anthropic-messages`, `openai-completions`, and `openai-responses` emit this event. SDK-backed adapters can expose only fields retained by their SDK. See [debug-provider.ts](../examples/extensions/debug-provider.ts) for an opt-in viewer that groups raw events by assistant message.
+Handlers are awaited in stream order, so slow handlers delay stream consumption. Handler errors are reported as extension errors without changing the provider response. Support is adapter-specific. Currently `anthropic-messages`, `openai-completions`, `openai-responses`, and `openai-codex-responses` emit this event. SDK-backed adapters can expose only fields retained by their SDK. See [debug-provider.ts](../examples/extensions/debug-provider.ts) for an opt-in viewer that groups raw events by assistant message.
 
 #### cache_warming_decision
 
