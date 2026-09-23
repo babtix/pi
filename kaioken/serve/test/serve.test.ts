@@ -611,3 +611,40 @@ describe("markdown tables", () => {
 		expect(html).toContain("<p>");
 	});
 });
+
+describe("live reloading and robustness", () => {
+	it("reflects updated documentation without restarting the server", async () => {
+		const root = await repo(FILES);
+		const server = await start(root);
+
+		const before = await (await fetch(`${server.url}/d/core/overview.md`)).text();
+		expect(before).toContain("Retrieval overview");
+		expect(before).not.toContain("Live reload test heading");
+
+		await writeFile(
+			join(root, ".kaioken/wiki/core/overview.md"),
+			"# Live reload test heading\n\nLive updated content.",
+			"utf8",
+		);
+
+		await new Promise((r) => setTimeout(r, 250));
+
+		const after = await (await fetch(`${server.url}/d/core/overview.md`)).text();
+		expect(after).toContain("Live reload test heading");
+		expect(after).toContain("Live updated content");
+	});
+
+	it("does not crash fatally when artifacts are missing or corrupt", async () => {
+		const root = await mkdtemp(join(tmpdir(), "kaioken-serve-corrupt-"));
+		roots.push(root);
+		await mkdir(join(root, ".kaioken"), { recursive: true });
+		await writeFile(join(root, ".kaioken/index.json"), "invalid json {", "utf8");
+
+		const server = await start(root);
+		const res = await fetch(`${server.url}/`);
+		expect(res.status).toBe(200);
+		const body = await res.text();
+		expect(body).toContain("Nothing indexed yet");
+	});
+});
+

@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { join, normalize, resolve, sep } from "node:path";
 import { type IndexResult, readIndexArtifact } from "@kaioken/index";
@@ -45,27 +45,90 @@ export interface RunningServer {
 	close(): Promise<void>;
 }
 
+class ArtifactState {
+	private readonly root: string;
+	private index: IndexResult | null = null;
+	private search: SearchIndex | null = null;
+	private library: Library = EMPTY_LIBRARY;
+	private lastChecked = 0;
+	private mtimes = new Map<string, number>();
+
+	constructor(root: string) {
+		this.root = root;
+	}
+
+	async refresh(): Promise<{ index: IndexResult | null; search: SearchIndex | null; library: Library }> {
+		const now = Date.now();
+		if (now - this.lastChecked < 200 && this.lastChecked > 0) {
+			return { index: this.index, search: this.search, library: this.library };
+		}
+		this.lastChecked = now;
+
+		const artifactsDir = join(this.root, KAIOKEN_DIR);
+		const watchPaths = [
+			artifactsDir,
+			join(artifactsDir, "index.json"),
+			join(artifactsDir, "provenance.json"),
+			join(artifactsDir, "wiki"),
+			join(artifactsDir, "cards"),
+			join(artifactsDir, "skills"),
+			join(artifactsDir, "search"),
+		];
+
+		let changed = false;
+		for (const p of watchPaths) {
+			let mtime = 0;
+			try {
+				const s = await stat(p);
+				mtime = s.mtimeMs;
+			} catch {}
+			const prev = this.mtimes.get(p) ?? 0;
+			if (mtime !== prev) {
+				changed = true;
+				this.mtimes.set(p, mtime);
+			}
+		}
+
+		if (changed || (this.index === null && this.library.docs.length === 0)) {
+			try {
+				this.index = await readIndexArtifact(this.root).catch(() => null);
+			} catch {
+				this.index = null;
+			}
+			try {
+				this.search = await SearchIndex.open(this.root).catch(() => null);
+			} catch {
+				this.search = null;
+			}
+			try {
+				this.library = await readLibrary(this.root).catch(() => EMPTY_LIBRARY);
+			} catch {
+				this.library = EMPTY_LIBRARY;
+			}
+		}
+
+		return { index: this.index, search: this.search, library: this.library };
+	}
+}
+
 export async function serve(options: ServeOptions): Promise<RunningServer> {
 	const root = resolve(options.root);
 	const host = options.host ?? "127.0.0.1";
 	const port = options.port ?? 7777;
 
-	// Loaded once at start-up: serving is a read of what the pipeline already
-	// wrote, never a build. Restarting is the refresh.
-	const index = await readIndexArtifact(root);
-	const search = await SearchIndex.open(root);
-	const library = await readLibrary(root);
+	const artifactState = new ArtifactState(root);
+	const initial = await artifactState.refresh();
 
 	const server = createServer((req, res) => {
-		handle(req.url ?? "/", { root, index, search, library })
+		artifactState
+			.refresh()
+			.then((current) => handle(req.url ?? "/", { root, ...current }))
 			.then((response) => {
 				res.writeHead(response.status, {
 					"content-type": response.type,
 					// The pages are self-contained; forbid everything else outright. The
-					// graph page is the one exception that carries a script, so it alone
-					// gets a policy that permits its own inline engine and its same-origin
-					// fetch of /graph.json.
-					"content-security-policy": response.graph
+					// graph and search pages get a policy that permits their inline scripts.
+					"content-security-policy": response.graph || response.script
 						? "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; form-action 'self'"
 						: "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; form-action 'self'",
 					"x-content-type-options": "nosniff",
@@ -91,7 +154,7 @@ export async function serve(options: ServeOptions): Promise<RunningServer> {
 	return {
 		url: `http://${host}:${actual}`,
 		port: actual,
-		summary: summarise(library, index?.symbolCount ?? 0),
+		summary: summarise(initial.library, initial.index?.symbolCount ?? 0),
 		close: () => closeServer(server),
 	};
 }
@@ -112,10 +175,10 @@ function summarise(library: Library, symbolCount: number): string {
 	return parts.join(" · ");
 }
 
-interface Context {
+export interface Context {
 	root: string;
 	index: IndexResult | null;
-	search: SearchIndex;
+	search: SearchIndex | null;
 	library?: Library;
 }
 
@@ -123,8 +186,9 @@ interface Response {
 	status: number;
 	type: string;
 	body: string;
-	/** True only for the graph page and its data, which alone need script and fetch allowed. */
+	/** True only for pages needing script-src allowed. */
 	graph?: boolean;
+	script?: boolean;
 }
 
 const HTML = "text/html; charset=utf-8";
@@ -143,7 +207,12 @@ export async function handle(rawUrl: string, ctx: Context): Promise<Response> {
 
 	if (path === "/") {
 		return html(
-			overviewPage(site, ctx.search.kinds(), ctx.search.chunkCount, ctx.search.semantic),
+			overviewPage(
+				site,
+				ctx.search ? ctx.search.kinds() : {},
+				ctx.search ? ctx.search.chunkCount : 0,
+				ctx.search?.semantic ?? false,
+			),
 		);
 	}
 
@@ -168,7 +237,7 @@ export async function handle(rawUrl: string, ctx: Context): Promise<Response> {
 		const query = url.searchParams.get("q") ?? "";
 		const limit = clampLimit(url.searchParams.get("limit"));
 		const kind = kindOf(url.searchParams.get("kind"));
-		const hits = query.trim()
+		const hits = ctx.search && query.trim()
 			? await ctx.search.search({ text: query, limit, ...(kind ? { kinds: [kind] } : {}) })
 			: [];
 
@@ -176,11 +245,22 @@ export async function handle(rawUrl: string, ctx: Context): Promise<Response> {
 			return {
 				status: 200,
 				type: JSON_TYPE,
-				body: `${JSON.stringify({ query, kind: kind ?? null, semantic: ctx.search.semantic, hits }, null, 2)}\n`,
+				body: `${JSON.stringify({ query, kind: kind ?? null, semantic: ctx.search?.semantic ?? false, hits }, null, 2)}\n`,
 			};
 		}
 		return html(
-			searchPage(site, query, hits, ctx.search.semantic, kind ?? "", ctx.search.kinds(), limit),
+			searchPage(
+				site,
+				query,
+				hits,
+				ctx.search?.semantic ?? false,
+				kind ?? "",
+				ctx.search ? ctx.search.kinds() : {},
+				limit,
+			),
+			200,
+			false,
+			true,
 		);
 	}
 
@@ -222,7 +302,7 @@ async function serveMarkdown(
 	if (store === "skills") {
 		// Frontmatter is machinery for the agent that loads the skill, not prose
 		// for a reader; showing it as a paragraph of stray colons helps nobody.
-		const stripped = body.replace(/^﻿/, "").replace(/^---\n[\s\S]*?\n---\n?/, "");
+		const stripped = body.replace(/^\uFEFF/, "").replace(/^---\n[\s\S]*?\n---\n?/, "");
 		const skill = site.library.skills.find((entry) => entry.path === rawPath);
 		const name = skill?.name || firstHeading(stripped, rawPath);
 		const prose = stripTitle(stripped, firstHeading(stripped, rawPath));
@@ -273,8 +353,8 @@ function clampLimit(raw: string | null): number {
 	return Math.min(Math.max(parsed, 1), 100);
 }
 
-function html(body: string, status = 200, graph = false): Response {
-	return { status, type: HTML, body, graph };
+function html(body: string, status = 200, graph = false, script = false): Response {
+	return { status, type: HTML, body, graph, script };
 }
 
 function closeServer(server: Server): Promise<void> {
