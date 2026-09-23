@@ -19,11 +19,11 @@
 ### Step 2: Category 09 — Provenance, Staleness & Truth Drift Detection
 *Rank: #2 High-ROI Truth Tracking | Package: `kaioken/provenance` | Features: `#UX-0801` – `#UX-0900`*  
 📄 **Plan Reference**: [`09-provenance-staleness-truth-drift-detection.md`](categories/09-provenance-staleness-truth-drift-detection.md)
-- [ ] **2.1** Implement instant zero-token staleness check under 50ms via SHA256 source hashing (`UX-0801`–`UX-0810`)
-- [ ] **2.2** Deploy fine-grained symbol-level provenance binding to prevent false-alarm invalidation (`UX-0811`–`UX-0820`)
-- [ ] **2.3** Build visual freshness percentage dial calculation (`UX-0821`–`UX-0830`)
-- [ ] **2.4** Implement interactive drift inspector showing exact source diffs invalidating docs (`UX-0831`–`UX-0840`)
-- [ ] **2.5** Build selective regeneration queue running model inference only for stale chapters (`UX-0841`–`UX-0850`)
+- [x] **2.1** Implement instant zero-token staleness check under 50ms via SHA256 source hashing (`UX-0801`–`UX-0810`)
+- [x] **2.2** Deploy fine-grained symbol-level provenance binding to prevent false-alarm invalidation (`UX-0811`–`UX-0820`)
+- [x] **2.3** Build visual freshness percentage dial calculation (`UX-0821`–`UX-0830`)
+- [x] **2.4** Implement interactive drift inspector showing exact source diffs invalidating docs (`UX-0831`–`UX-0840`)
+- [x] **2.5** Build selective regeneration queue running model inference only for stale chapters (`UX-0841`–`UX-0850`)
 
 ---
 

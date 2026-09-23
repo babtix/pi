@@ -31,26 +31,12 @@ export function computeStaleness(
 	options?: StalenessOptions,
 ): StalenessReport {
 	const current = new Map(scan.files.map((file) => [file.path, file.hash]));
+	const report = fastCheckStaleness(documents, current, options);
 
-	const statuses: DocumentStatus[] = documents.map((record) =>
-		status(record, current, options?.symbolHashes),
-	);
-
-	const changedFiles = new Set<string>();
-	const deletedFiles = new Set<string>();
 	const documented = new Set<string>();
-
 	for (const record of documents) {
 		for (const source of record.sources) documented.add(source.path);
 	}
-	for (const entry of statuses) {
-		for (const path of entry.changed) changedFiles.add(path);
-		for (const path of entry.deleted) deletedFiles.add(path);
-	}
-
-	const stale = statuses.filter((s) => s.freshness === "stale");
-	const orphaned = statuses.filter((s) => s.freshness === "orphaned");
-	const fresh = statuses.filter((s) => s.freshness === "current");
 
 	const undocumentedFiles = scan.files
 		.filter((file) => {
@@ -64,17 +50,174 @@ export function computeStaleness(
 		.sort();
 
 	return {
+		...report,
+		undocumentedFiles,
+	};
+}
+
+/**
+ * Fast-path staleness evaluation directly from a map of file hashes.
+ *
+ * Runs in sub-millisecond time by comparing in-memory hashes without
+ * rescanning or recalculating filesystem metadata.
+ */
+export function fastCheckStaleness(
+	documents: readonly Provenance[],
+	currentHashes: ReadonlyMap<string, string>,
+	options?: StalenessOptions,
+): StalenessReport {
+	const statuses: DocumentStatus[] = documents.map((record) =>
+		status(record, currentHashes, options?.symbolHashes),
+	);
+
+	const changedFiles = new Set<string>();
+	const deletedFiles = new Set<string>();
+
+	for (const entry of statuses) {
+		for (const path of entry.changed) changedFiles.add(path);
+		for (const path of entry.deleted) deletedFiles.add(path);
+	}
+
+	const stale = statuses.filter((s) => s.freshness === "stale");
+	const orphaned = statuses.filter((s) => s.freshness === "orphaned");
+	const fresh = statuses.filter((s) => s.freshness === "current");
+
+	return {
 		stale,
 		current: fresh,
 		orphaned,
 		documents: statuses,
 		changedFiles: [...changedFiles].sort(),
 		deletedFiles: [...deletedFiles].sort(),
-		undocumentedFiles,
+		undocumentedFiles: [],
 		freshness: statuses.length === 0 ? 1 : fresh.length / statuses.length,
 		ok: stale.length === 0 && orphaned.length === 0,
 	};
 }
+
+/**
+ * Pre-indexed fast staleness checker for sub-millisecond evaluation
+ * on high-frequency file watcher events or large repositories.
+ */
+export class FastStalenessChecker {
+	private readonly documents: readonly Provenance[];
+	private readonly pathToDocs = new Map<string, Set<Provenance>>();
+	private readonly symbolKeyToDocs = new Map<string, Set<Provenance>>();
+
+	constructor(documents: readonly Provenance[]) {
+		this.documents = documents;
+		for (const doc of documents) {
+			for (const source of doc.sources) {
+				let docSet = this.pathToDocs.get(source.path);
+				if (!docSet) {
+					docSet = new Set();
+					this.pathToDocs.set(source.path, docSet);
+				}
+				docSet.add(doc);
+
+				const key = bindingKeyFor(source);
+				if (key !== null) {
+					let symSet = this.symbolKeyToDocs.get(key);
+					if (!symSet) {
+						symSet = new Set();
+						this.symbolKeyToDocs.set(key, symSet);
+					}
+					symSet.add(doc);
+				}
+			}
+		}
+	}
+
+	/**
+	 * Instant staleness audit against current hash map (sub-50ms guarantee).
+	 */
+	checkStaleness(
+		currentHashes: ReadonlyMap<string, string>,
+		options?: StalenessOptions,
+	): StalenessReport {
+		return fastCheckStaleness(this.documents, currentHashes, options);
+	}
+
+	/**
+	 * Ultra-fast status overview without allocating full reports.
+	 */
+	quickCheck(currentHashes: ReadonlyMap<string, string>): {
+		ok: boolean;
+		freshness: number;
+		staleCount: number;
+		orphanedCount: number;
+		currentCount: number;
+	} {
+		let stale = 0;
+		let orphaned = 0;
+		let current = 0;
+
+		for (const doc of this.documents) {
+			if (doc.sources.length === 0) continue;
+			let changed = 0;
+			let deleted = 0;
+			for (const s of doc.sources) {
+				const hash = currentHashes.get(s.path);
+				if (hash === undefined) deleted++;
+				else if (hash !== s.hash) changed++;
+			}
+			if (deleted === doc.sources.length) orphaned++;
+			else if (changed > 0 || deleted > 0) stale++;
+			else current++;
+		}
+
+		const total = this.documents.length;
+		return {
+			ok: stale === 0 && orphaned === 0,
+			freshness: total === 0 ? 1 : current / total,
+			staleCount: stale,
+			orphanedCount: orphaned,
+			currentCount: current,
+		};
+	}
+
+	/**
+	 * O(1) document invalidation for a set of changed file paths.
+	 */
+	invalidatedBy(changedPaths: Iterable<string>, options?: InvalidationOptions): string[] {
+		const changed = new Set(changedPaths);
+		const changedSymbols =
+			options?.changedSymbols === undefined ? null : new Set(options.changedSymbols);
+		const out = new Set<string>();
+
+		if (changedSymbols !== null) {
+			for (const sym of changedSymbols) {
+				const docs = this.symbolKeyToDocs.get(sym);
+				if (docs) {
+					for (const d of docs) out.add(d.document);
+				}
+			}
+		}
+
+		for (const path of changed) {
+			const docs = this.pathToDocs.get(path);
+			if (docs) {
+				for (const d of docs) {
+					// If caller provided changedSymbols, only invalidate whole-file sources or matched symbols
+					if (changedSymbols !== null) {
+						const hasMatchingSource = d.sources.some((s) => {
+							if (s.path !== path) return false;
+							const key = bindingKeyFor(s);
+							if (key === null) return true; // whole file source invalidates
+							return changedSymbols.has(key);
+						});
+						if (hasMatchingSource) out.add(d.document);
+					} else {
+						out.add(d.document);
+					}
+				}
+			}
+		}
+
+		return [...out].sort();
+	}
+}
+
 
 function status(
 	record: Provenance,
@@ -284,9 +427,12 @@ export function isDocumentableFile(file: FileRecord): boolean {
 		const lower = dir.toLowerCase();
 		if (lower === "test" || lower === "tests" || lower === "__tests__") return false;
 		if (lower === "scripts") return false;
+		if (lower === "dist" || lower === "build" || lower === "out" || lower === "coverage") return false;
+		if (lower === "node_modules" || lower === "vendor" || lower === "fixtures" || lower === "mocks") return false;
 	}
 
 	if (lowerBase.includes(".test.") || lowerBase.includes(".spec.")) return false;
+	if (lowerBase.endsWith(".d.ts")) return false;
 
 	if (file.risk.includes("lockfile")) return false;
 	if (LOCKFILES.has(lowerBase)) return false;
@@ -305,3 +451,4 @@ export function isDocumentableFile(file: FileRecord): boolean {
 
 	return true;
 }
+

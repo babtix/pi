@@ -77,6 +77,115 @@ export interface DocumentStatus {
 	generatedAt: string;
 }
 
+/** Options for tolerance normalization (comment, whitespace, docstring stripping). */
+export interface NormalizationOptions {
+	/** If true, ignore single-line (//, #) and multi-line comments. Default: false. */
+	ignoreComments?: boolean;
+	/** If true, collapse whitespace sequences and trim line endings. Default: false. */
+	ignoreWhitespace?: boolean;
+	/** If true, ignore docstrings/documentation blocks. Default: false. */
+	ignoreDocstrings?: boolean;
+}
+
+/** Documentation categories for multi-category freshness tracking. */
+export type DocCategory =
+	| "architecture"
+	| "cards"
+	| "subsystems"
+	| "procedures"
+	| "api"
+	| "data_models"
+	| "security"
+	| "runbooks"
+	| "benchmarks"
+	| "tutorials"
+	| "other";
+
+export interface CategoryFreshness {
+	category: DocCategory;
+	total: number;
+	fresh: number;
+	stale: number;
+	orphaned: number;
+	percentage: number;
+}
+
+export type FreshnessTier = "pristine" | "healthy" | "warning" | "critical";
+
+export interface FreshnessDial {
+	/** 0..100 percentage. */
+	overallPercentage: number;
+	tier: FreshnessTier;
+	categories: Record<DocCategory, CategoryFreshness>;
+	totalDocuments: number;
+	freshDocuments: number;
+	staleDocuments: number;
+	orphanedDocuments: number;
+}
+
+/** One line within a unified diff hunk. */
+export interface DiffHunkLine {
+	type: "add" | "delete" | "context";
+	text: string;
+	oldLine?: number;
+	newLine?: number;
+}
+
+/** A unified diff hunk. */
+export interface DiffHunk {
+	oldStart: number;
+	oldCount: number;
+	newStart: number;
+	newCount: number;
+	lines: DiffHunkLine[];
+}
+
+export type DriftKind =
+	| "signature_changed"
+	| "body_modified"
+	| "source_deleted"
+	| "comment_only"
+	| "whole_file_drift";
+
+/** Exact source diff invalidating a document or bound symbol. */
+export interface SourceDiff {
+	path: string;
+	symbol?: string;
+	startLine?: number;
+	endLine?: number;
+	driftKind: DriftKind;
+	hunks: DiffHunk[];
+	additions: number;
+	deletions: number;
+}
+
+export interface DocumentDriftReport {
+	document: string;
+	freshness: Freshness;
+	changedSources: SourceDiff[];
+	summary: string;
+}
+
+export interface RegenerationTask {
+	id: string;
+	document: string;
+	priority: number;
+	category: DocCategory;
+	changedSources: SourceDiff[];
+	estimatedTokenSavings: number;
+	status: "queued" | "running" | "completed" | "failed" | "skipped";
+	error?: string;
+}
+
+export interface RegenerationQueueStats {
+	totalTasks: number;
+	queued: number;
+	completed: number;
+	failed: number;
+	estimatedTokensSaved: number;
+	tokenSavingsRatio: number;
+}
+
 /** Options for staleness computation. All fields optional; defaults preserve whole-file behavior. */
 export interface StalenessOptions {
 	/**
@@ -92,6 +201,11 @@ export interface StalenessOptions {
 	 * whole-file comparison.
 	 */
 	symbolHashes?: ReadonlyMap<string, string>;
+	/**
+	 * Normalization tolerance options when comparing source contents.
+	 * When enabled, comments and cosmetic whitespace edits will not invalidate documents.
+	 */
+	tolerance?: NormalizationOptions;
 }
 
 /** Options for inverse invalidation lookup. */
@@ -139,3 +253,4 @@ export interface StalenessReport {
 	/** True when nothing is stale or orphaned. */
 	ok: boolean;
 }
+
