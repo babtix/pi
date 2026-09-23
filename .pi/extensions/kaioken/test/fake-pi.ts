@@ -84,6 +84,8 @@ export interface FakePi {
 	entries: Array<{ customType: string; data?: unknown }>;
 	/** Custom entry renderers registered through `pi.registerEntryRenderer`. */
 	entryRenderers: Map<string, any>;
+	/** Toast notifications pushed through `ctx.ui.notify`. */
+	notifications: Array<{ message: string; type?: "info" | "warning" | "error" }>;
 }
 
 export function fakePi(): FakePi {
@@ -92,6 +94,7 @@ export function fakePi(): FakePi {
 	const hooks: Record<string, any[]> = {};
 	const status: Array<{ id: string; text: string }> = [];
 	const widgets: Array<{ id: string; lines: string[] }> = [];
+	const notifications: Array<{ message: string; type?: "info" | "warning" | "error" }> = [];
 	const entries: Array<{ customType: string; data?: unknown }> = [];
 	const entryRenderers = new Map<string, any>();
 	/** Theme names the bridge asked for, in order. */
@@ -125,7 +128,11 @@ export function fakePi(): FakePi {
 			// `mode` matters: the header and the theme are TUI-only, and the
 			// bridge checks it before touching either.
 			mode: options?.mode ?? "tui",
+			hasUI: (options?.mode ?? "tui") === "tui",
 			ui: {
+				notify: (message: string, type?: "info" | "warning" | "error") => {
+					notifications.push({ message, type });
+				},
 				setStatus: (id: string, text: string) => {
 					status.push({ id, text });
 				},
@@ -176,6 +183,7 @@ export function fakePi(): FakePi {
 		headerFactories,
 		entries,
 		entryRenderers,
+		notifications,
 	};
 }
 

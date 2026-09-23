@@ -377,4 +377,46 @@ describe("LiveLog: transcript + widget progress for long commands", () => {
 		expect(rec.working.at(-1)).toBeUndefined();
 		expect(rec.notifications.at(-1)?.message).toContain("1 failure(s)");
 	});
+
+	it("kaio-plan emits immediate start and cancel entries on spend cancellation", async () => {
+		const tempDir = await mkdtemp(join(tmpdir(), "kaio-plan-start-"));
+		try {
+			const fake = createFakePi();
+			registerCommands(fake.pi, () => tempDir);
+			const planCmd = fake.commands.get("kaio-plan");
+
+			const ctx = fake.ctx(tempDir);
+			(ctx.ui as any).confirm = async () => false; // User cancels spend
+
+			await planCmd.handler("×2", ctx);
+
+			const planEntries = fake.entries.filter((e) => e.customType === "kaioken-progress");
+			expect(planEntries.length).toBeGreaterThanOrEqual(2);
+			expect((planEntries[0]?.data as any)?.kind).toBe("start");
+			expect((planEntries[0]?.data as any)?.message).toContain("Starting module planning");
+			expect((planEntries.at(-1)?.data as any)?.kind).toBe("error");
+			expect((planEntries.at(-1)?.data as any)?.message).toContain("cancelled at spend confirmation");
+		} finally {
+			await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+		}
+	});
+
+	it("kaio-merge emits immediate start entry before verification", async () => {
+		const fake = createFakePi();
+		registerCommands(fake.pi);
+		const mergeCmd = fake.commands.get("kaio-merge");
+		const tempDir = await mkdtemp(join(tmpdir(), "kaio-merge-start-"));
+		try {
+			const ctx = fake.ctx(tempDir);
+			await mergeCmd.handler("feat-test", ctx);
+
+			const mergeEntries = fake.entries.filter((e) => e.customType === "kaioken-progress");
+			expect(mergeEntries.length).toBeGreaterThanOrEqual(1);
+			expect((mergeEntries[0]?.data as any)?.kind).toBe("start");
+			expect((mergeEntries[0]?.data as any)?.message).toContain("Verifying and merging worktree");
+		} finally {
+			await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+		}
+	});
 });
+

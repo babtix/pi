@@ -694,6 +694,7 @@ export function registerCommands(
 			const taskSlug = slug(args || "task");
 			const wt = worktreePath(r, taskSlug);
 			const log = new LiveLog(ctx.ui, "merge", pi);
+			log.start(`Verifying and merging worktree "${taskSlug}"…`);
 			try {
 				const verification = await runVerify(wt);
 				if (!verification.pass) {
@@ -718,10 +719,13 @@ export function registerCommands(
 		handler: async (args, ctx) => {
 			const r = resolveRoot(root, ctx);
 			const m = parseMult(args);
-			if (!(await spendGate.confirm(ctx, "plan", m))) return;
-
 			const log = new LiveLog(ctx.ui, "plan", pi);
 			log.start(`Starting module planning (multiplier ×${m})…`);
+
+			if (!(await spendGate.confirm(ctx, "plan", m))) {
+				log.failure("Module planning cancelled at spend confirmation.");
+				return;
+			}
 			try {
 				const client = clientFor(ctx);
 				const out = await runPlan(r, m, client, {
@@ -746,10 +750,13 @@ export function registerCommands(
 		handler: async (args, ctx) => {
 			const r = resolveRoot(root, ctx);
 			const m = parseMult(args);
-			if (!(await spendGate.confirm(ctx, "cards", m))) return;
-
 			const log = new LiveLog(ctx.ui, "cards", pi);
 			log.start(`Starting knowledge cards generation (multiplier ×${m})…`);
+
+			if (!(await spendGate.confirm(ctx, "cards", m))) {
+				log.failure("Cards generation cancelled at spend confirmation.");
+				return;
+			}
 			try {
 				log.progress("Reading module plan from .kaioken/module-plan.yaml…");
 				const plan = await readModulePlan(r);
@@ -805,8 +812,6 @@ export function registerCommands(
 		handler: async (args, ctx) => {
 			const r = resolveRoot(root, ctx);
 			const m = parseMult(args);
-			if (!(await spendGate.confirm(ctx, "wiki", m))) return;
-
 			const isPlan = /--plan/.test(args);
 			const log = new LiveLog(ctx.ui, "wiki", pi);
 			log.start(
@@ -814,6 +819,11 @@ export function registerCommands(
 					? `Starting wiki structure planning (multiplier ×${m})…`
 					: `Starting wiki generation cascade (multiplier ×${m})…`,
 			);
+
+			if (!(await spendGate.confirm(ctx, "wiki", m))) {
+				log.failure("Wiki cascade cancelled at spend confirmation.");
+				return;
+			}
 
 			const client = clientFor(ctx);
 			if (!client) {
@@ -910,10 +920,13 @@ export function registerCommands(
 		handler: async (args, ctx) => {
 			const r = resolveRoot(root, ctx);
 			const m = parseMult(args);
-			if (!(await spendGate.confirm(ctx, "update", m))) return;
-
 			const log = new LiveLog(ctx.ui, "update", pi);
 			log.start(`Starting staleness check (multiplier ×${m})…`);
+
+			if (!(await spendGate.confirm(ctx, "update", m))) {
+				log.failure("Update cancelled at spend confirmation.");
+				return;
+			}
 			try {
 				const drift = await checkDrift(r);
 				const stale = drift.documents.filter((d) => d.freshness !== "current");
@@ -995,7 +1008,11 @@ export function registerCommands(
 				return;
 			}
 
-			if (!(await spendGate.confirm(ctx, "research", m))) return;
+			log.start(`Starting deep research for "${topic}" (multiplier ×${m})…`);
+			if (!(await spendGate.confirm(ctx, "research", m))) {
+				log.failure("Research cancelled at spend confirmation.");
+				return;
+			}
 
 			const client = clientFor(ctx);
 			if (!client) {
@@ -1006,7 +1023,6 @@ export function registerCommands(
 			// The network is injected here and nowhere else, so the research core
 			// itself stays transport-free and offline-testable (Invariant 10).
 			const depth = depthFor(m);
-			log.start(`Starting deep research for "${topic}" (multiplier ×${m})…`);
 			try {
 				log.progress(`Gathering web sources for "${topic}" (depth ${depth})…`);
 				const gathered = await gatherSources({
@@ -1046,10 +1062,13 @@ export function registerCommands(
 		handler: async (args, ctx) => {
 			const r = resolveRoot(root, ctx);
 			const m = parseMult(args);
-			if (!(await spendGate.confirm(ctx, "skillgen", m))) return;
-
 			const log = new LiveLog(ctx.ui, "skills", pi);
 			log.start(`Starting skill generation (multiplier ×${m})…`);
+
+			if (!(await spendGate.confirm(ctx, "skillgen", m))) {
+				log.failure("Skill generation cancelled at spend confirmation.");
+				return;
+			}
 
 			const client = clientFor(ctx);
 			if (!client) {
