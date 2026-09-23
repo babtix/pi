@@ -1,11 +1,11 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { scan } from "@kaioken/scan";
+import { KAIOKEN_DIR, scan } from "@kaioken/scan";
 import { computeStaleness } from "./staleness.ts";
 import type { Provenance, StalenessReport } from "./types.ts";
 
 export async function readProvenanceIndex(root: string): Promise<Provenance[] | null> {
-	for (const loc of [join(root, ".kaioken", "wiki", "provenance.json"), join(root, ".kaioken", "provenance.json")]) {
+	for (const loc of [join(root, KAIOKEN_DIR, "wiki", "provenance.json"), join(root, KAIOKEN_DIR, "provenance.json")]) {
 		try {
 			const data = JSON.parse(await readFile(loc, "utf8"));
 			if (data && Array.isArray(data.documents)) return data.documents;
@@ -17,7 +17,7 @@ export async function readProvenanceIndex(root: string): Promise<Provenance[] | 
 }
 
 export async function readCardsSafe(root: string): Promise<Provenance[]> {
-	const cardsDir = join(root, ".kaioken", "cards");
+	const cardsDir = join(root, KAIOKEN_DIR, "cards");
 	const out: Provenance[] = [];
 	try {
 		const files = await readdir(cardsDir);
