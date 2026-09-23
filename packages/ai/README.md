@@ -1048,7 +1048,7 @@ const response = await models.complete(openRouterModel, context, {
 });
 ```
 
-Callbacks are awaited in stream order, so slow callbacks delay stream consumption and thrown errors fail the request. Support is adapter-specific; currently `anthropic-messages`, `openai-completions`, `openai-responses`, `openai-codex-responses`, `azure-openai-responses`, `google-generative-ai`, `google-vertex`, and `mistral-conversations` invoke this callback. SDK-backed adapters can expose only fields retained by their SDK.
+Callbacks are awaited in stream order, so slow callbacks delay stream consumption and thrown errors fail the request. Support is adapter-specific; currently `anthropic-messages`, `openai-completions`, `openai-responses`, `openai-codex-responses`, `azure-openai-responses`, `google-generative-ai`, `google-vertex`, `mistral-conversations`, and `bedrock-converse-stream` invoke this callback. SDK-backed adapters can expose only fields retained by their SDK.
 
 ## Custom Providers
 
