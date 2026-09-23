@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { git, gitLine, isRepo } from "./run.ts";
 
 /**
@@ -57,19 +59,35 @@ export async function readDiff(repo: string, base?: string): Promise<DiffSnapsho
 		against = "worktree";
 	}
 
-	const files = splitLines(await gitLine(repo, "diff", ...args, "--name-only"));
+	const trackedFiles = splitLines(await gitLine(repo, "diff", ...args, "--name-only"));
 	const patchResult = await git(repo, "diff", ...args, "--no-color");
-	if (!patchResult.ok) return null;
 
-	const raw = patchResult.stdout;
+	// `git diff` never reports untracked files. For a worktree or staged
+	// snapshot the model still needs to know about them: a brand-new file is
+	// invisible to the diff above but is exactly what the commit message must
+	// describe. Historical ranges skip this — an old range has no worktree.
+	const untracked = range ? [] : await listUntracked(repo);
+	const files = [...trackedFiles];
+	for (const name of untracked) {
+		if (!files.includes(name)) files.push(name);
+	}
+
+	let raw = patchResult.ok ? patchResult.stdout : "";
+	if (!patchResult.ok && files.length === 0) return null;
+
+	const { patch: untrackedPatch, insertions: untrackedInsertions } =
+		await buildUntrackedPatch(repo, untracked);
+	if (untrackedPatch !== "") {
+		raw = raw.endsWith("\n") || raw === "" ? `${raw}${untrackedPatch}` : `${raw}\n${untrackedPatch}`;
+	}
 	const truncated = raw.length > PATCH_BUDGET;
-	const { insertions, deletions } = parseShortstat(await gitLine(repo, "diff", ...args, "--shortstat"));
+	const shortstat = parseShortstat(await gitLine(repo, "diff", ...args, "--shortstat"));
 
 	return {
 		patch: truncated ? `${raw.slice(0, PATCH_BUDGET)}\n… diff truncated …\n` : raw,
 		files,
-		insertions,
-		deletions,
+		insertions: shortstat.insertions + untrackedInsertions,
+		deletions: shortstat.deletions,
 		truncated,
 		against,
 	};
@@ -108,4 +126,52 @@ function splitLines(text: string): string[] {
 		.split(/\r?\n/)
 		.map((line) => line.trim())
 		.filter(Boolean);
+}
+
+/**
+ * Files git does not track yet, honoring .gitignore.
+ *
+ * `git diff` (staged or not) never mentions these, so without this call a
+ * snapshot of a fresh checkout with three new files reports zero files.
+ */
+async function listUntracked(repo: string): Promise<string[]> {
+	return splitLines(await gitLine(repo, "ls-files", "--others", "--exclude-standard"));
+}
+
+/**
+ * A synthetic unified diff for untracked files, treating each as all-added.
+ *
+ * Example: a new `notes.txt` containing `hello` becomes
+ * `diff --git a/notes.txt b/notes.txt` plus `+hello`, so the model sees the
+ * content even though `git diff` prints nothing for it.
+ *
+ * Unreadable, binary, or vanished files stay in `files` but contribute no
+ * patch lines — the file list is the guarantee, the patch is best-effort.
+ */
+async function buildUntrackedPatch(
+	repo: string,
+	untracked: string[],
+): Promise<{ patch: string; insertions: number }> {
+	let patch = "";
+	let insertions = 0;
+	for (const name of untracked) {
+		let content: string;
+		try {
+			content = await readFile(join(repo, name), "utf8");
+		} catch {
+			continue;
+		}
+		if (content.includes("\0")) {
+			patch += `diff --git a/${name} b/${name}\nnew file mode 100644\nBinary files /dev/null and b/${name} differ\n`;
+			continue;
+		}
+		const lines = content === "" ? [] : content.split("\n").map((line) => line.replace(/\r$/, ""));
+		if (lines.length > 0 && lines[lines.length - 1] === "" && content.endsWith("\n")) lines.pop();
+		insertions += lines.length;
+		patch +=
+			`diff --git a/${name} b/${name}\nnew file mode 100644\n--- /dev/null\n+++ b/${name}\n` +
+			`@@ -0,0 +1,${lines.length} @@\n` +
+			(lines.length > 0 ? `${lines.map((line) => `+${line}`).join("\n")}\n` : "");
+	}
+	return { patch, insertions };
 }

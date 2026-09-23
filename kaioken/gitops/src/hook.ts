@@ -50,8 +50,10 @@ export async function installPostCommit(repo: string, exe: readonly string[]): P
 	const path = await hookPath(repo);
 	if (!path) throw new Error(`${repo} has no resolvable git directory`);
 
+	const resolvedRepo = resolvePath(repo);
 	await mkdir(dirname(path), { recursive: true });
-	const block = hookBlock(exe, resolvePath(repo));
+	await mkdir(join(resolvedRepo, ".kaioken"), { recursive: true });
+	const block = hookBlock(resolveNodeExe(exe), resolvedRepo);
 	const existing = (await readIfPresent(path)) ?? "";
 
 	let out: string;
@@ -94,21 +96,42 @@ export async function removePostCommit(repo: string): Promise<boolean> {
  * single quotes, which sidesteps every question about how a backslash in
  * `C:\Users\…` would survive.
  *
- * The refresh runs detached and discards its output. A hook that made every
- * commit wait on a model call would be uninstalled within the day.
+ * The refresh runs detached so it never delays a commit, and its output is
+ * appended to `.kaioken/hook.log`: the previous `>/dev/null 2>&1` swallowed
+ * every failure (missing node on the sh PATH, Windows file locks), leaving
+ * no trace of why the wiki stopped refreshing.
  */
 function hookBlock(exe: readonly string[], repo: string): string {
 	// `exe` is an argv prefix, not a command line: launching through node means
 	// two words (the interpreter and the entry script), and quoting them as one
 	// string would ask sh to run a file whose name contains a space.
 	const command = exe.map(shellQuote).join(" ");
+	const logDir = join(repo, ".kaioken");
+	const logFile = join(logDir, "hook.log");
 	return [
 		START,
 		"# Refresh the generated wiki against this commit. Runs detached so it",
 		"# never delays a commit; remove with `kaioken hook remove`.",
-		`${command} update --root ${shellQuote(repo)} >/dev/null 2>&1 &`,
+		"# Failures are appended to .kaioken/hook.log.",
+		`mkdir -p ${shellQuote(logDir)} || true`,
+		`${command} update --root ${shellQuote(repo)} >> ${shellQuote(logFile)} 2>&1 &`,
 		END,
 	].join("\n");
+}
+
+/**
+ * A bare `node` relies on the sh PATH, which on Windows Git Bash often lacks
+ * node entirely. When the caller passes a bare interpreter, pin the absolute
+ * interpreter running this install (`process.execPath`) so the hook survives
+ * PATH differences. Paths already containing a separator are left alone.
+ */
+function resolveNodeExe(exe: readonly string[]): readonly string[] {
+	if (exe.length === 0) return exe;
+	const first = exe[0];
+	if (first !== "node" && first !== "node.exe") return exe;
+	const absolute = process.execPath;
+	if (!absolute) return exe;
+	return [absolute, ...exe.slice(1)];
 }
 
 function shellQuote(path: string): string {
