@@ -53,10 +53,10 @@
 ### Step 5: Category 07 — AST Symbol Indexing & Code Oracle
 *Rank: #5 Code Intelligence Core | Package: `kaioken/index` | Features: `#UX-0601` – `#UX-0700`*  
 📄 **Plan Reference**: [`07-ast-symbol-indexing-code-oracle.md`](categories/07-ast-symbol-indexing-code-oracle.md)
-- [ ] **5.1** Implement incremental AST delta indexing updating only modified files (`UX-0601`–`UX-0610`)
-- [ ] **5.2** Build Tree-sitter WASM parser pool recycling to eliminate heap churn (`UX-0611`–`UX-0620`)
-- [ ] **5.3** Deploy multi-hop re-export chain resolution engine across TypeScript/JS/Python/Go (`UX-0621`–`UX-0630`)
-- [ ] **5.4** Implement scope-aware symbol anchor definition preview cards with source context (`UX-0631`–`UX-0640`)
+- [x] **5.1** Implement incremental AST delta indexing updating only modified files (`UX-0601`–`UX-0610`)
+- [x] **5.2** Build Tree-sitter WASM parser pool recycling to eliminate heap churn (`UX-0611`–`UX-0620`)
+- [x] **5.3** Deploy multi-hop re-export chain resolution engine across TypeScript/JS/Python/Go (`UX-0621`–`UX-0630`)
+- [x] **5.4** Implement scope-aware symbol anchor definition preview cards with source context (`UX-0631`–`UX-0640`)
 
 ---
 

@@ -1,4 +1,5 @@
 import type { Node, Query } from "web-tree-sitter";
+import { extractFallbackDeclarations } from "./fallback.ts";
 import { loadGrammar, withParser } from "./grammars.ts";
 import type { FileMap, ReExportRecord, SymbolKind, SymbolRecord } from "./types.ts";
 
@@ -47,15 +48,14 @@ export async function extractFile(input: ExtractInput): Promise<FileMap> {
 	const grammar = await loadGrammar(input.language);
 
 	if (!grammar) {
-		const fallback = extractFallbackDeclarations(input);
 		return {
 			path: input.path,
 			language: input.language,
 			hash: input.hash,
 			lineCount,
 			unparsed: true,
-			symbols: fallback.symbols,
-			reexports: fallback.reexports,
+			symbols: [],
+			reexports: [],
 		};
 	}
 
@@ -480,15 +480,32 @@ export function collectReExports(root: Node, language: string): ReExportRecord[]
 			}
 			break;
 		}
+		case "go": {
+			for (let i = 0; i < root.namedChildCount; i++) {
+				const child = root.namedChild(i);
+				if (!child || child.type !== "import_declaration") continue;
+				for (let j = 0; j < child.namedChildCount; j++) {
+					const spec = child.namedChild(j);
+					if (!spec || spec.type !== "import_spec") continue;
+					const pathNode = spec.childForFieldName("path");
+					if (!pathNode) continue;
+					const from = pathNode.text.replace(/^['"`]|['"`]$/g, "");
+					const nameNode = spec.childForFieldName("name");
+					if (nameNode) {
+						if (nameNode.text === ".") {
+							reexports.push({ name: "*", from });
+						} else {
+							reexports.push({ name: nameNode.text, importedName: "*", from });
+						}
+					}
+				}
+			}
+			break;
+		}
 	}
 
 	return reexports;
 }
 
-export function extractFallbackDeclarations(_input: ExtractInput): {
-	symbols: SymbolRecord[];
-	reexports: ReExportRecord[];
-} {
-	return { symbols: [], reexports: [] };
-}
+export { extractFallbackDeclarations } from "./fallback.ts";
 

@@ -1,3 +1,8 @@
+import {
+	type FuzzyLookupOptions,
+	ReExportEngine,
+	type ReExportResolution,
+} from "./reexport.ts";
 import type { FileMap, IndexResult, SymbolRecord } from "./types.ts";
 
 /**
@@ -17,8 +22,11 @@ export interface SymbolLocation {
 export class SymbolOracle {
 	private readonly byName = new Map<string, SymbolLocation[]>();
 	private readonly byPath = new Map<string, FileMap>();
+	private readonly reexportEngine: ReExportEngine;
 
 	constructor(index: IndexResult) {
+		this.reexportEngine = new ReExportEngine(index.files);
+
 		for (const file of index.files) {
 			this.byPath.set(file.path, file);
 			for (const symbol of file.symbols) {
@@ -87,79 +95,26 @@ export class SymbolOracle {
 
 	/** Resolve a symbol name from a given file to its originating declaration location. */
 	resolve(path: string, name: string): SymbolLocation | null {
-		return this.resolveInternal(path, name, new Set<string>());
+		return this.reexportEngine.resolve(path, name);
 	}
 
-	private resolveInternal(path: string, name: string, visited: Set<string>): SymbolLocation | null {
-		const key = `${path}:${name}`;
-		if (visited.has(key)) return null;
-		visited.add(key);
-
-		const file = this.byPath.get(path);
-		if (!file) return null;
-
-		// 1. Direct declaration
-		const direct = file.symbols.find((s) => s.name === name);
-		if (direct) {
-			return { path: file.path, symbol: direct };
-		}
-
-		if (!file.reexports || file.reexports.length === 0) return null;
-
-		// 2. Named re-export
-		for (const re of file.reexports) {
-			if (re.name === name) {
-				const targetPath = this.resolvePath(path, re.from);
-				if (!targetPath) continue;
-				const targetName = re.importedName ?? re.name;
-				const resolved = this.resolveInternal(targetPath, targetName, visited);
-				if (resolved) return resolved;
-			}
-		}
-
-		// 3. Wildcard re-export
-		for (const re of file.reexports) {
-			if (re.name === "*") {
-				const targetPath = this.resolvePath(path, re.from);
-				if (!targetPath) continue;
-				const resolved = this.resolveInternal(targetPath, name, visited);
-				if (resolved) return resolved;
-			}
-		}
-
-		return null;
+	/** Resolve complete re-export chain tracing provenance across files. */
+	resolveChain(path: string, name: string): ReExportResolution | null {
+		return this.reexportEngine.resolveChain(path, name);
 	}
 
-	private resolvePath(fromPath: string, specifier: string): string | null {
-		if (this.byPath.has(specifier)) return specifier;
-		const dir = fromPath.includes("/") ? fromPath.slice(0, fromPath.lastIndexOf("/")) : "";
-		const raw = dir ? `${dir}/${specifier}` : specifier;
-		const parts: string[] = [];
-		for (const seg of raw.split("/")) {
-			if (seg === "" || seg === ".") continue;
-			if (seg === "..") parts.pop();
-			else parts.push(seg);
-		}
-		const base = parts.join("/");
-		const candidates = [
-			base,
-			`${base}.ts`,
-			`${base}.tsx`,
-			`${base}.js`,
-			`${base}.jsx`,
-			`${base}.py`,
-			`${base}.go`,
-			`${base}.rs`,
-			`${base}/index.ts`,
-			`${base}/index.tsx`,
-			`${base}/index.js`,
-			`${base}/index.jsx`,
-			`${base}/__init__.py`,
-		];
-		for (const c of candidates) {
-			if (this.byPath.has(c)) return c;
-		}
-		return null;
+	/** Perform partial and fuzzy symbol matching across declarations. */
+	findFuzzy(query: string, options?: FuzzyLookupOptions): SymbolLocation[] {
+		return this.reexportEngine.findFuzzy(query, options);
+	}
+
+	/** Retrieve full re-export graph mapping files to their re-export records. */
+	getReExportGraph(): Map<string, FileMap["reexports"]> {
+		return this.reexportEngine.getReExportGraph();
+	}
+
+	resolvePath(fromPath: string, specifier: string): string | null {
+		return this.reexportEngine.resolvePath(fromPath, specifier);
 	}
 
 	hasFile(path: string): boolean {

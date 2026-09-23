@@ -116,110 +116,12 @@ export async function newParser(language: Language): Promise<Parser> {
 	return parser;
 }
 
-const DEFAULT_MAX_POOL_SIZE = typeof availableParallelism === "function" ? availableParallelism() : 4;
-
-export class LanguageParserPool {
-	private readonly available: Parser[] = [];
-	private inUse = 0;
-	private readonly waiting: Array<(parser: Parser) => void> = [];
-	private readonly language: Language;
-	private readonly maxSize: number;
-
-	constructor(language: Language, maxSize: number = DEFAULT_MAX_POOL_SIZE) {
-		this.language = language;
-		this.maxSize = maxSize;
-	}
-
-	async acquire(): Promise<Parser> {
-		if (this.available.length > 0) {
-			this.inUse++;
-			return this.available.pop()!;
-		}
-		if (this.inUse < this.maxSize) {
-			await initParser();
-			const parser = new Parser();
-			parser.setLanguage(this.language);
-			this.inUse++;
-			return parser;
-		}
-		return new Promise<Parser>((resolve) => {
-			this.waiting.push((parser) => {
-				this.inUse++;
-				resolve(parser);
-			});
-		});
-	}
-
-	release(parser: Parser): void {
-		try {
-			parser.reset();
-		} catch {
-			try {
-				parser.delete();
-			} catch {}
-			this.inUse--;
-			return;
-		}
-
-		this.inUse--;
-		const next = this.waiting.shift();
-		if (next) {
-			next(parser);
-		} else {
-			this.available.push(parser);
-		}
-	}
-
-	get availableCount(): number {
-		return this.available.length;
-	}
-
-	get inUseCount(): number {
-		return this.inUse;
-	}
-
-	clear(): void {
-		for (const parser of this.available) {
-			try {
-				parser.delete();
-			} catch {}
-		}
-		this.available.length = 0;
-	}
-}
-
-const parserPools = new Map<string, LanguageParserPool>();
-
-export function getParserPool(
-	languageName: string,
-	language: Language,
-	maxPoolSize?: number,
-): LanguageParserPool {
-	let pool = parserPools.get(languageName);
-	if (!pool) {
-		pool = new LanguageParserPool(language, maxPoolSize);
-		parserPools.set(languageName, pool);
-	}
-	return pool;
-}
-
-export async function withParser<T>(
-	languageName: string,
-	language: Language,
-	fn: (parser: Parser) => Promise<T> | T,
-): Promise<T> {
-	const pool = getParserPool(languageName, language);
-	const parser = await pool.acquire();
-	try {
-		return await fn(parser);
-	} finally {
-		pool.release(parser);
-	}
-}
-
-export function clearParserPools(): void {
-	for (const pool of parserPools.values()) {
-		pool.clear();
-	}
-	parserPools.clear();
-}
+export {
+	LanguageParserPool,
+	getParserPool,
+	withParser,
+	clearParserPools,
+	getAllPoolStats,
+	pruneAllIdleParsers,
+} from "./pool.ts";
+export type { ParserPoolOptions, PoolStats } from "./pool.ts";

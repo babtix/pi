@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { FileRecord, ScanResult } from "@kaioken/scan";
+import { computeIndexDelta, type IndexDelta } from "./delta.ts";
 import { extractFile } from "./extract.ts";
 import { isSupportedLanguage } from "./grammars.ts";
 import type { FileMap, IndexResult } from "./types.ts";
@@ -26,6 +27,7 @@ export interface BuildStats {
 export interface BuildOutcome {
 	index: IndexResult;
 	stats: BuildStats;
+	delta?: IndexDelta;
 }
 
 /**
@@ -97,16 +99,21 @@ export async function buildIndex(
 		}
 	}
 
+	const index: IndexResult = {
+		root: scanResult.root,
+		builtAt: new Date().toISOString(),
+		fileCount: files.length,
+		symbolCount,
+		unparsedLanguages,
+		files,
+	};
+
+	const delta = previous ? computeIndexDelta(previous, index) : undefined;
+
 	return {
-		index: {
-			root: scanResult.root,
-			builtAt: new Date().toISOString(),
-			fileCount: files.length,
-			symbolCount,
-			unparsedLanguages,
-			files,
-		},
+		index,
 		stats,
+		...(delta ? { delta } : {}),
 	};
 }
 
